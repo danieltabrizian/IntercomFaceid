@@ -1,85 +1,118 @@
 import os
+import paho.mqtt.client as mqtt
 import time
 import json
-import requests
 
-# Home Assistant Supervisor API endpoint
-HASS_API_URL = "http://supervisor/core/api"
+# MQTT broker address and credentials
+mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
+mqtt_username = os.getenv("MQTT_USERNAME", "mqtt")
+mqtt_password = os.getenv("MQTT_PASSWORD", "mqtt")
 
-# Get the Home Assistant Supervisor token from the environment
-HASS_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+# Initialize MQTT client
+mqtt_client = mqtt.Client()
 
-# Headers for API requests
-HEADERS = {
-    "Authorization": f"Bearer {HASS_TOKEN}",
-    "Content-Type": "application/json",
-}
-print(HEADERS)
-print(HASS_API_URL)
-print(HASS_TOKEN)
-# Function to unlock the door
+# Set MQTT credentials if needed
+if mqtt_username and mqtt_password:
+    mqtt_client.username_pw_set(mqtt_username, mqtt_password)
+
+# Connect to the MQTT broker
+mqtt_client.connect(mqtt_broker, 1883, 60)
+
+# Global states
+bell_running = False
+
+# MQTT topics for states and commands
+bell_state_topic = "homeassistant/binary_sensor/bell_run/state"
+learn_face_command_topic = "homeassistant/switch/learn_new_face/set"
+unlock_door_command_topic = "homeassistant/switch/unlock_door/set"
+
+# Function to publish MQTT discovery messages
+def publish_discovery():
+    # Binary Sensor for Bell Ring
+    bell_sensor_config = {
+        "name": "Bell Run",
+        "device_class": "sound",
+        "state_topic": bell_state_topic,
+        "unique_id": "bell_run_sensor",
+        "payload_on": "ON",
+        "payload_off": "OFF"
+    }
+    mqtt_client.publish("homeassistant/binary_sensor/bell_run/config", json.dumps(bell_sensor_config))
+
+    # Switch for "Learn New Face"
+    learn_face_switch_config = {
+        "name": "Learn New Face",
+        "command_topic": learn_face_command_topic,
+        "unique_id": "learn_new_face_switch"
+    }
+    mqtt_client.publish("homeassistant/switch/learn_new_face/config", json.dumps(learn_face_switch_config))
+
+    # Switch for "Unlock Door"
+    unlock_door_switch_config = {
+        "name": "Unlock Door",
+        "command_topic": unlock_door_command_topic,
+        "unique_id": "unlock_door_switch"
+    }
+    mqtt_client.publish("homeassistant/switch/unlock_door/config", json.dumps(unlock_door_switch_config))
+
+# Function to publish the state of the bell sensor
+def publish_bell_state(state):
+    mqtt_client.publish(bell_state_topic, state)
+    print(f"Published bell state: {state}")
+
+# Function to handle incoming messages (button presses)
+def on_message(client, userdata, msg):
+    if msg.topic == learn_face_command_topic:
+        if msg.payload.decode() == "ON":
+            learn_new_face()
+
+    elif msg.topic == unlock_door_command_topic:
+        if msg.payload.decode() == "ON":
+            unlock_door()
+
+# Function to simulate unlocking the door
 def unlock_door():
     print("Unlocking the door...")
-    # Implement your actual door unlocking logic here
-    time.sleep(1)
+    # Add your actual unlocking logic here
+    time.sleep(2)
     print("Door unlocked!")
 
-# Function to save Face ID
-def save_faceid(face_data):
-    print(f"Saving face ID: {face_data}")
-    # Implement logic to save face ID
-    time.sleep(1)
-    print("Face ID saved!")
+# Function to simulate learning a new face
+def learn_new_face():
+    print("Learning new face...")
+    # Add your actual face recognition logic here
+    time.sleep(3)
+    print("New face learned!")
 
-# Function to trigger when the bell is rung
+# Function to simulate the bell ringing
 def ring_bell():
+    global bell_running
     print("Bell rung!")
-    # Update the status sensor in Home Assistant to "on"
-    update_doorbell_sensor("on")
-    time.sleep(2)
-    update_doorbell_sensor("off")
+    bell_running = True
+    publish_bell_state("ON")
+    time.sleep(2)  # Simulate the bell ringing for 2 seconds
+    bell_running = False
+    publish_bell_state("OFF")
 
-# Function to update the doorbell status sensor in Home Assistant
-def update_doorbell_sensor(state):
-    print(f"Updating doorbell sensor to: {state}")
-    sensor_data = {
-        "state": state,
-        "attributes": {
-            "friendly_name": "Doorbell Status",
-            "device_class": "sound"
-        }
-    }
-    response = requests.post(
-        f"{HASS_API_URL}/states/binary_sensor.doorbell_status",
-        headers=HEADERS,
-        data=json.dumps(sensor_data)
-    )
-    if response.status_code == 200:
-        print("Doorbell sensor updated successfully!")
-    else:
-        print(f"Failed to update sensor: {response.text}")
-
-# Function to handle service calls from Home Assistant
-def handle_service_call(service):
-    if service == "unlock_door":
-        unlock_door()
-    elif service == "save_faceid":
-        face_data = {"name": "John Doe", "face_id": "face123"}  # Dummy face data
-        save_faceid(face_data)
-
-# Main loop to simulate the add-on running
+# Main function
 def main():
-    print("Intercom Face ID Add-on is running...")
+    # Subscribe to command topics for switches
+    mqtt_client.subscribe(learn_face_command_topic)
+    mqtt_client.subscribe(unlock_door_command_topic)
 
+    # Set the callback function for when messages are received
+    mqtt_client.on_message = on_message
+
+    # Start MQTT client loop in a background thread
+    mqtt_client.loop_start()
+
+    # Publish the discovery messages to set up the entities
+    publish_discovery()
+
+    # Main loop simulating the bell ringing every 30 seconds
     while True:
-        # Simulating doorbell ring event every 30 seconds for testing
         ring_bell()
-        time.sleep(30)
-
-        # Simulate calling the services (in a real case, Home Assistant would trigger these)
-        handle_service_call("unlock_door")
-        time.sleep(5)  # Wait before calling the next service
-        handle_service_call("save_faceid")
+        time.sleep(30)  # Wait 30 seconds before ringing the bell again
 
 if __name__ == "__main__":
     main()
