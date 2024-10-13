@@ -2,7 +2,7 @@ name: IntercomFaceId
 version: "1.0.0"
 slug: intercomfaceid
 description: Face recognition for intercom
-url: "https://github.com/danieltabrizian/IntercomFaceid"
+url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/faceid"
 arch:
   - armhf
   - armv7
@@ -14,8 +14,8 @@ map:
   - share:rw
 schema:
   message: "str?"
+options:
+  message: "Hello world..."
 image: "docker.io/danieltabrizian/intercomfaceid:latest"
 ports:
   5000/tcp: 5000
-startup: "services"
-boot: "auto"
