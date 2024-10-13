@@ -23,5 +23,5 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |
-          docker build . -t danieltabrizian/intercomfaceid:latest
+          docker build ./faceid -t danieltabrizian/intercomfaceid:latest
           docker push danieltabrizian/intercomfaceid:latest
