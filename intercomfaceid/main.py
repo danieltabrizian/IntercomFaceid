@@ -3,8 +3,8 @@ import paho.mqtt.client as mqtt
 import time
 import json
 import cv2
-import face_recognition
 import numpy as np
+from deepface import DeepFace
 
 # MQTT broker address and credentials
 mqtt_broker = os.getenv("MQTT_BROKER", "core-mosquitto")  # Use 'core-mosquitto' inside Home Assistant
@@ -56,30 +56,34 @@ def load_face_data():
     else:
         print("No face data file found, starting with an empty face database.")
 
+# Function to generate face embedding using DeepFace
+def get_face_embedding(image):
+    # Generate face embedding using Facenet (or any other DeepFace model)
+    embedding = DeepFace.represent(image, model_name="Facenet")[0]["embedding"]
+    return np.array(embedding)
+
 # Function to capture face embeddings for 10 seconds and store them
 def learn_new_face():
     print("Learning new face...")
 
     # Open the video stream (from /dev/video0)
     video_capture = cv2.VideoCapture(0)
-    
+
     start_time = time.time()
-    while time.time() - start_time < 10:
+    while time.time() - start_time < 60:
         ret, frame = video_capture.read()
         if not ret:
             print("Failed to capture video")
             break
 
-        # Detect faces in the frame
-        rgb_frame = frame[:, :, ::-1]
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-
-        # Store the first face detected in the video
-        if face_encodings:
-            known_face_encodings.append(face_encodings[0])
-            known_face_names.append("New Face")  # You can customize the name or label here
-            print("Face encoding captured!")
+        # Detect faces and generate embeddings
+        try:
+            embedding = get_face_embedding(frame)
+            known_face_encodings.append(embedding)
+            known_face_names.append("New Face")  # Customize the name or label here
+            print("Face embedding captured!")
+        except Exception as e:
+            print(f"Error generating embedding: {e}")
 
     # Save face data after learning
     save_face_data()
@@ -98,26 +102,27 @@ def ring_bell():
 
     # Open the video stream and capture frames for face detection
     video_capture = cv2.VideoCapture(0)
-    
+
     ret, frame = video_capture.read()
     if not ret:
         print("Failed to capture video")
     else:
-        # Detect faces in the frame
-        rgb_frame = frame[:, :, ::-1]
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        try:
+            # Generate face embedding for the detected face
+            embedding = get_face_embedding(frame)
 
-        # Compare detected faces with known faces
-        for face_encoding in face_encodings:
-            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            # Compare detected face embedding with known faces
+            distances = [np.linalg.norm(embedding - known_face) for known_face in known_face_encodings]
+            best_match_index = np.argmin(distances)
 
-            # If a match is found, unlock the door
-            best_match_index = np.argmin(face_distances)
-            if matches[best_match_index]:
+            # Threshold for considering a match (you can adjust this)
+            if distances[best_match_index] < 0.6:
                 print("Face recognized! Unlocking door...")
                 unlock_door()
+            else:
+                print("Unknown face. Access denied.")
+        except Exception as e:
+            print(f"Error during face comparison: {e}")
 
     # Release the video stream
     video_capture.release()

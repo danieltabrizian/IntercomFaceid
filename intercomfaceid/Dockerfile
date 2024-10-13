@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies for dlib, OpenCV, and other tools
+# Install system dependencies for OpenCV
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -8,15 +8,10 @@ RUN apt-get update && apt-get install -y \
     liblapack-dev \
     libx11-dev \
     libgtk-3-dev \
-    libboost-python-dev \
-    libboost-thread-dev \
     python3-dev \
     libjpeg-dev \
     zlib1g-dev \
     && apt-get clean
-
-# Install dlib and OpenCV via pip using precompiled wheels
-RUN pip install --no-cache-dir dlib opencv-python face-recognition paho-mqtt requests
 
 # Set the working directory in the container
 WORKDIR /usr/src/app
@@ -24,11 +19,9 @@ WORKDIR /usr/src/app
 # Copy the current directory contents into the container
 COPY . .
 
-# Install Python dependencies
-# RUN pip install --no-cache-dir -r requirements.txt
-
-# Show installed requests package (for debug)
-RUN pip show requests
+# Install Python dependencies (DeepFace, OpenCV, paho-mqtt, requests)
+RUN pip install deepface opencv-python paho-mqtt requests
 
 # Run the Python script
-CMD ["python", "./main.py"]
+# Run the Python script with unbuffered output (-u)
+CMD ["python", "-u", "./main.py"]
