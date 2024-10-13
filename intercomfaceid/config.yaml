@@ -3,7 +3,7 @@ name: Face ID for Intercom
 version: "1.2.0"
 slug: faceid_intercom
 description: FaceId for Intercom
-url: "https://github.com/home-assistant/addons-example/tree/main/example"
+url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/example"
 arch:
   - armhf
   - armv7
