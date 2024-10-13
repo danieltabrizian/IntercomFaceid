@@ -1,0 +1,14 @@
+{
+  "name": "intercom",
+  "version": "1.0",
+  "slug": "intercom",
+  "description": "Runs intercom service for faceid",
+  "startup": "before",
+  "boot": "auto",
+  "ports": {
+    "5000/tcp": 5000
+  },
+  "map": ["share:rw"],
+  "options": {},
+  "schema": {}
+}
