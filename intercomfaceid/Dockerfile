@@ -18,6 +18,7 @@ RUN apk add --no-cache \
     boost-dev \
     && apk add jpeg-dev zlib-dev
 
+RUN pip install --upgrade pip setuptools wheel
 # Set the working directory in the container
 WORKDIR /usr/src/app
 

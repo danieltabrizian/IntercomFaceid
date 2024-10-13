@@ -1,6 +1,6 @@
+opencv-python
 requests
 paho-mqtt
-opencv-python
 face-recognition
 paho-mqtt
 numpy
