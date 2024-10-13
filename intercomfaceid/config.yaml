@@ -1,9 +1,9 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
-name: IntercomFaceId
-version: "1.0.1"
-slug: intercomfaceid
-description: Faceid softrware for intercoms
-url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
+name: Example add-on
+version: "1.2.0"
+slug: example
+description: Example add-on
+url: "https://github.com/home-assistant/addons-example/tree/main/example"
 arch:
   - armhf
   - armv7
@@ -17,4 +17,4 @@ options:
   message: "Hello world..."
 schema:
   message: "str?"
-image: "docker.io/danieltabrizian/intercomfaceid:latest"
+image: "ghcr.io/home-assistant/{arch}-addon-example"
