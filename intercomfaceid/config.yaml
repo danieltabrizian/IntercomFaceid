@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: Face ID for Intercom
-version: "1.3.8"
+version: "1.3.9"
 slug: faceid_intercom
 description: FaceId for Intercom
 url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
@@ -11,10 +11,11 @@ arch:
   - amd64
   - i386
 init: false
+hassio_api: true
 map:
   - share:rw
 options:
-  message: "Hello world..."
+  message: "test."
 schema:
   message: "str?"
 build:
