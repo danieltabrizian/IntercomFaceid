@@ -1,8 +1,9 @@
+# https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: IntercomFaceId
-version: "1.0.0"
+version: "1.0.1"
 slug: intercomfaceid
-description: Face recognition for intercom
-url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/faceid"
+description: Faceid softrware for intercoms
+url: "https://github.com/home-assistant/addons-example/tree/main/example"
 arch:
   - armhf
   - armv7
@@ -12,10 +13,8 @@ arch:
 init: false
 map:
   - share:rw
-schema:
-  message: "str?"
 options:
   message: "Hello world..."
+schema:
+  message: "str?"
 image: "docker.io/danieltabrizian/intercomfaceid:latest"
-ports:
-  5000/tcp: 5000
