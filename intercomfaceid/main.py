@@ -1,7 +1,7 @@
 import os
 import time
-import requests
 import json
+import requests
 
 # Home Assistant Supervisor API endpoint
 HASS_API_URL = "http://supervisor/core/api"
