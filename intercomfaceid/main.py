@@ -4,7 +4,8 @@ import time
 import json
 
 # MQTT broker address and credentials
-mqtt_broker = os.getenv("MQTT_BROKER", "localhost")
+mqtt_broker = os.getenv("MQTT_BROKER", "core-mosquitto")  # Use 'core-mosquitto' inside Home Assistant
+mqtt_port = 1883  # Default MQTT port
 mqtt_username = os.getenv("MQTT_USERNAME", "mqtt")
 mqtt_password = os.getenv("MQTT_PASSWORD", "mqtt")
 
@@ -16,7 +17,7 @@ if mqtt_username and mqtt_password:
     mqtt_client.username_pw_set(mqtt_username, mqtt_password)
 
 # Connect to the MQTT broker
-mqtt_client.connect(mqtt_broker, 1883, 60)
+mqtt_client.connect(mqtt_broker, mqtt_port, 60)
 
 # Global states
 bell_running = False
