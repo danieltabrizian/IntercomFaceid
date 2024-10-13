@@ -17,4 +17,7 @@ options:
   message: "Hello world..."
 schema:
   message: "str?"
-image: "ghcr.io/home-assistant/{arch}-addon-example"
+build:
+  dockerfile: Dockerfile
+  args:
+    - BUILD_FROM=docker.io/danieltabrizian/intercomfaceid:latest"
