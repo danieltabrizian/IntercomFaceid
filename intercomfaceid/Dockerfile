@@ -8,6 +8,6 @@ COPY . .
 
 # Install any dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip show requests
 # Run the Python script
 CMD ["python", "./main.py"]
