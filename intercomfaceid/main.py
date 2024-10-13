@@ -14,7 +14,9 @@ HEADERS = {
     "Authorization": f"Bearer {HASS_TOKEN}",
     "Content-Type": "application/json",
 }
-
+print(HEADERS)
+print(HASS_API_URL)
+print(HASS_TOKEN)
 # Function to unlock the door
 def unlock_door():
     print("Unlocking the door...")
