@@ -1,10 +1,12 @@
 {
-  "name": "intercom",
+  "name": "Intercom Face ID",
   "version": "1.0",
-  "slug": "intercom",
-  "description": "Runs intercom service for faceid",
-  "startup": "before",
+  "slug": "intercomfaceid",
+  "description": "An add-on to run the intercom face ID Python script.",
+  "arch": ["armv7", "armhf", "aarch64", "amd64", "i386"],
+  "startup": "services",
   "boot": "auto",
+  "image": "danieltabrizian/intercomfaceid:latest",
   "ports": {
     "5000/tcp": 5000
   },
