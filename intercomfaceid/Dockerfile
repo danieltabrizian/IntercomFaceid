@@ -1,24 +1,23 @@
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
-# Install system dependencies for dlib and OpenCV
-RUN apk add --no-cache \
-    build-base \
+# Install system dependencies for dlib, OpenCV, and other tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
     cmake \
-    linux-headers \
-    libjpeg-turbo-dev \
-    openblas-dev \
-    lapack-dev \
+    libopenblas-dev \
+    liblapack-dev \
     libx11-dev \
-    libxext-dev \
-    libxrender-dev \
-    libxrandr-dev \
-    libxi-dev \
-    gtk+3.0-dev \
+    libgtk-3-dev \
+    libboost-python-dev \
+    libboost-thread-dev \
     python3-dev \
-    boost-dev \
-    && apk add jpeg-dev zlib-dev
+    libjpeg-dev \
+    zlib1g-dev \
+    && apt-get clean
 
-RUN pip install --upgrade pip setuptools wheel
+# Install dlib and OpenCV via pip using precompiled wheels
+RUN pip install --no-cache-dir dlib opencv-python face-recognition paho-mqtt requests
+
 # Set the working directory in the container
 WORKDIR /usr/src/app
 
@@ -26,7 +25,7 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# RUN pip install --no-cache-dir -r requirements.txt
 
 # Show installed requests package (for debug)
 RUN pip show requests
