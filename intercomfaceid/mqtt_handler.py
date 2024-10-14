@@ -10,10 +10,10 @@ class MQTTHandler:
         self.mqtt_username = os.getenv("MQTT_USERNAME", "mqtt")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "mqtt")
 
-        self.bell_state_topic = "homeassistant/binary_sensor/intercom/bell_run/state"
-        self.learn_face_command_topic = "homeassistant/button/intercom/learn_new_face/command"
-        self.unlock_door_command_topic = "homeassistant/button/intercom/unlock_door/command"
-        self.recognize_face_command_topic = "homeassistant/button/intercom/recognize_face/command"
+        self.bell_state_topic = "homeassistant/binary_sensor/bell_run"
+        self.learn_face_command_topic = "homeassistant/button/learn_new_face"
+        self.unlock_door_command_topic = "homeassistant/button/unlock_door"
+        self.recognize_face_command_topic = "homeassistant/button/recognize_face"
 
         self.mqtt_client = mqtt.Client()
         if self.mqtt_username and self.mqtt_password:
@@ -38,11 +38,9 @@ class MQTTHandler:
 
     def on_connect(self, client, userdata, flags, rc):
         print(f"Connected with result code {rc}")
-        # Subscribing in on_connect() means that if we lose the connection and
-        # reconnect then subscriptions will be renewed.
-        client.subscribe(self.learn_face_command_topic)
-        client.subscribe(self.unlock_door_command_topic)
-        client.subscribe(self.recognize_face_command_topic)
+        client.subscribe(self.learn_face_command_topic + "/command")
+        client.subscribe(self.unlock_door_command_topic + "/command")
+        client.subscribe(self.recognize_face_command_topic + "/command")
 
     def set_face_recognizer(self, face_recognizer):
         self.face_recognizer = face_recognizer
@@ -52,19 +50,19 @@ class MQTTHandler:
 
     def on_message(self, client, userdata, msg):
         print(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
-        if msg.topic == self.learn_face_command_topic:
+        if msg.topic == self.learn_face_command_topic + "/command":
             print("Received command to learn new face")
             if self.face_recognizer:
                 self.face_recognizer.learn_new_face()
             else:
                 print("Face recognizer not set")
-        elif msg.topic == self.unlock_door_command_topic:
+        elif msg.topic == self.unlock_door_command_topic + "/command":
             print("Received command to unlock door")
             if self.arduino:
                 self.arduino.unlock()
             else:
                 print("Arduino handler not set")
-        elif msg.topic == self.recognize_face_command_topic:
+        elif msg.topic == self.recognize_face_command_topic + "/command":
             print("Received command to recognize face")
             if self.face_recognizer:
                 self.face_recognizer.captureFace()
@@ -75,7 +73,7 @@ class MQTTHandler:
         print(f"Message {mid} published successfully")
 
     def publish_bell_state(self, state):
-        result = self.mqtt_client.publish(self.bell_state_topic, state)
+        result = self.mqtt_client.publish(self.bell_state_topic + "/state", state)
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             print(f"Published bell state: {state}")
         else:
@@ -88,39 +86,64 @@ class MQTTHandler:
             {
                 "name": "Learn New Face",
                 "unique_id": "learn_new_face_button",
-                "command_topic": self.learn_face_command_topic+"/command",
-                "device_class": "button",
-                "payload_press": "PRESS",
-                "state_topic": self.learn_face_command_topic+"/command"
+                "command_topic": self.learn_face_command_topic + "/command",
+                "device": {
+                    "identifiers": ["intercom"],
+                    "name": "Intercom",
+                    "model": "TCS Hack",
+                    "manufacturer": "TCS Daniel",
+                    "sw_version": "1.0"
+                }
             },
             {
                 "name": "Unlock Door",
                 "unique_id": "unlock_door_button",
-                "command_topic": self.unlock_door_command_topic+"/command",
-                "device_class": "button",
-                "payload_press": "PRESS",
-                "state_topic": self.unlock_door_command_topic+"/command"
+                "command_topic": self.unlock_door_command_topic + "/command",
+                "device": {
+                    "identifiers": ["intercom"],
+                    "name": "Intercom",
+                    "model": "TCS Hack",
+                    "manufacturer": "TCS Daniel",
+                    "sw_version": "1.X"
+                }
             },
             {
                 "name": "Recognize Face",
                 "unique_id": "recognize_face_button",
-                "command_topic": self.recognize_face_command_topic+"/command",
-                "device_class": "button",
-                "payload_press": "PRESS",
-                "state_topic": self.recognize_face_command_topic+"/command"
+                "command_topic": self.recognize_face_command_topic + "/command",
+                "device": {
+                    "identifiers": ["intercom"],
+                    "name": "Intercom",
+                    "model": "TCS Hack",
+                    "manufacturer": "TCS Daniel",
+                    "sw_version": "1.X"
+                }
             },
             {
                 "name": "Bell Run",
                 "unique_id": "bell_run_sensor",
-                "state_topic": self.bell_state_topic+"/state",
-                "device_class": "motion",
+                "state_topic": self.bell_state_topic + "/state",
                 "payload_on": "ON",
-                "payload_off": "OFF"
+                "payload_off": "OFF",
+                "device": {
+                    "identifiers": ["intercom"],
+                    "name": "Intercom",
+                    "model": "TCS Hack",
+                    "manufacturer": "TCS Daniel",
+                    "sw_version": "1.X"
+                }
             }
         ]
 
         for device in devices:
-            config_topic = f"homeassistant/{device['device_class']}/intercom/{device['unique_id']}/config"
+            if "command_topic" in device:
+                topic_base = device["command_topic"].rsplit('/', 1)[0]
+            elif "state_topic" in device:
+                topic_base = device["state_topic"].rsplit('/', 1)[0]
+            else:
+                continue
+
+            config_topic = f"{topic_base}/config"
             payload = json.dumps(device)
             result = self.mqtt_client.publish(config_topic, payload, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
@@ -129,6 +152,4 @@ class MQTTHandler:
                 print(f"Failed to publish config for {device['name']}")
 
     def process_messages(self):
-        # This method can be called periodically to process MQTT messages
-        # The actual message processing happens in the background due to loop_start()
         pass
