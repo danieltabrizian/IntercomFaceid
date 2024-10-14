@@ -129,6 +129,11 @@ class FaceRecognizer:
     def captureFace(self, capture_time=30):
         def capture_video():
             video_capture = cv2.VideoCapture(0)
+            if not video_capture.isOpened():
+                print("Failed to open the camera. Unlocking door immediately...")
+                if self.arduino is not None:
+                    self.arduino.unlock()  # Unlock the door immediately if camera fails to open
+                return
             start_time = time.time()
 
             while self.running:
