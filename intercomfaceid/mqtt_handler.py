@@ -37,6 +37,7 @@ class MQTTHandler:
         elif msg.topic == self.unlock_door_command_topic:
             print("Received command to unlock door")
             # Call function to unlock door
+            self.arduino.unlock()
         elif msg.topic == self.recognize_face_command_topic:
             print("Received command to recognize face")
             # Call function to recognize face
