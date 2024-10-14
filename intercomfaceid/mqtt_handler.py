@@ -112,7 +112,7 @@ class MQTTHandler:
             {
                 "name": "Bell Run",
                 "unique_id": "bell_run_sensor",
-                "state_topic": self.bell_state_topic+"/state"
+                "state_topic": self.bell_state_topic+"/state",
                 "device_class": "motion",
                 "payload_on": "ON",
                 "payload_off": "OFF"
