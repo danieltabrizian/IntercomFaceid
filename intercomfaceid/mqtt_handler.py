@@ -122,7 +122,7 @@ class MQTTHandler:
             {
                 "name": "Bell Ring",
                 "unique_id": "bell_ring_sensor",
-                "topic": self.bell_state_topic"/state",
+                "topic": self.bell_state_topic+"/state",
                 "automation_type":"trigger",
                 "device": {
                     "identifiers": [
