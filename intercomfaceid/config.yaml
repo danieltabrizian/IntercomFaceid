@@ -15,8 +15,6 @@ hassio_api: true
 memory: "1024M"
 devices:
   - /dev/ttyUSB0:/dev/ttyUSB0
-  - /dev/video0:/dev/video0
-privileged: true
 map:
   - share:rw
 options:
