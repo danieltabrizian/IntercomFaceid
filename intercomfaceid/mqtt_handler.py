@@ -1,5 +1,6 @@
 import os
 import paho.mqtt.client as mqtt
+import json
 
 class MQTTHandler:
     def __init__(self):
@@ -24,6 +25,9 @@ class MQTTHandler:
         self.mqtt_client.subscribe(self.recognize_face_command_topic)
         self.mqtt_client.loop_start()
 
+        # Call the method to broadcast device types
+        self.broadcast_device_types()
+
     def set_face_recognizer(self, face_recognizer):
         self.face_recognizer = face_recognizer
     
@@ -36,18 +40,50 @@ class MQTTHandler:
             self.face_recognizer.learn_new_face()
         elif msg.topic == self.unlock_door_command_topic:
             print("Received command to unlock door")
-            # Call function to unlock door
             self.arduino.unlock()
         elif msg.topic == self.recognize_face_command_topic:
             print("Received command to recognize face")
-            # Call function to recognize face
             self.face_recognizer.captureFace()
 
     def publish_bell_state(self, state):
         self.mqtt_client.publish(self.bell_state_topic, state)
         print(f"Published bell state: {state}")
 
+    def broadcast_device_types(self):
+        # Publish button for learning new face
+        learn_new_face_payload = {
+            "name": "Learn New Face",
+            "command_topic": self.learn_face_command_topic,
+            "device_class": "button"
+        }
+        self.mqtt_client.publish("homeassistant/button/learn_new_face/config", json.dumps(learn_new_face_payload), retain=True)
+
+        # Publish button for unlocking the door
+        unlock_door_payload = {
+            "name": "Unlock Door",
+            "command_topic": self.unlock_door_command_topic,
+            "device_class": "button"
+        }
+        self.mqtt_client.publish("homeassistant/button/unlock_door/config", json.dumps(unlock_door_payload), retain=True)
+
+        # Publish button for recognizing face
+        recognize_face_payload = {
+            "name": "Recognize Face",
+            "command_topic": self.recognize_face_command_topic,
+            "device_class": "button"
+        }
+        self.mqtt_client.publish("homeassistant/button/recognize_face/config", json.dumps(recognize_face_payload), retain=True)
+
+        # Publish binary sensor for bell run state
+        bell_state_payload = {
+            "name": "Bell Run",
+            "state_topic": self.bell_state_topic,
+            "device_class": "motion",
+            "payload_on": "ON",
+            "payload_off": "OFF"
+        }
+        self.mqtt_client.publish("homeassistant/binary_sensor/bell_run/config", json.dumps(bell_state_payload), retain=True)
+
     def process_messages(self):
         # This method can be called periodically to process MQTT messages
-        # The actual message processing happens in the background due to loop_start()
         pass
