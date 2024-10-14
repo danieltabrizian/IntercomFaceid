@@ -2,14 +2,19 @@ import facial_recognition
 import mqtt_handler
 import arduino_handler
 import time
+import threading
 
-
+def turn_bell_off(mqtt_client):
+    """Turn the bell state OFF after 10 seconds."""
+    time.sleep(10)
+    mqtt_client.publish_bell_state("OFF")
+    print("Bell state turned OFF")
 
 def main():
     # Flags to enable/disable components
     enable_face_recognition = True
     enable_mqtt = True
-    enable_arduino = False
+    enable_arduino = True
 
     face_recognizer = None
     arduino = None
@@ -37,20 +42,25 @@ def main():
 
     while True:
 
-
         if enable_mqtt:
             mqtt_client.process_messages()
 
         if enable_arduino:
             command = arduino.read_command()
-            if command.startswith("call:"):
+            if command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F"):
                 print(f"Received call command: {command}")
+                mqtt_client.publish_bell_state("ON")
                 if enable_face_recognition:
                     face_recognizer.captureFace()
-                # Add logic to handle the call command
+
+                # Start a non-blocking timer to turn off the bell after 10 seconds
+                threading.Thread(target=turn_bell_off, args=(mqtt_client,), daemon=True).start()
+
             elif command == "unlock":
                 print("Received unlock command")
                 # Add logic to unlock the door
+            elif len(command) > 2:
+                print(f"Received unknown command: {command}")
 
         time.sleep(1)  # Adjust the sleep time as needed
 

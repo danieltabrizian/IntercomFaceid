@@ -1,5 +1,6 @@
 FROM python:3.9-slim
 
+
 # Install system dependencies (build tools, g++, OpenCV, etc.)
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -15,8 +16,10 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && apt-get clean
 
+RUN pip install --upgrade pip
+
 # Install Python dependencies
-RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt
+RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial
 
 # Set the working directory
 WORKDIR /usr/src/app

@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: Face ID for Intercom
-version: "1.4.4"
+version: "1.4.5"
 slug: faceid_intercom
 description: FaceId for Intercom
 url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
@@ -12,13 +12,13 @@ arch:
   - i386
 init: false
 hassio_api: true
+memory: "1024M"
 map:
   - share:rw
 options:
-  message: "test."
+  usb_port: "/dev/ttyUSB0"
+  baudrate: 9600
 schema:
-  message: "str?"
-build:
-  dockerfile: Dockerfile
-  args:
-    - BUILD_FROM=docker.io/danieltabrizian/intercomfaceid:latest"
+  usb_port: str
+  baudrate: int
+image: "docker.io/danieltabrizian/intercomfaceid:latest"
