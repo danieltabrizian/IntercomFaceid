@@ -10,10 +10,10 @@ class MQTTHandler:
         self.mqtt_username = os.getenv("MQTT_USERNAME", "mqtt")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "mqtt")
 
-        self.bell_state_topic = "homeassistant/binary_sensor/bell_run/state"
-        self.learn_face_command_topic = "homeassistant/button/learn_new_face/command"
-        self.unlock_door_command_topic = "homeassistant/button/unlock_door/command"
-        self.recognize_face_command_topic = "homeassistant/button/recognize_face/command"
+        self.bell_state_topic = "homeassistant/binary_sensor/intercom/bell_run/state"
+        self.learn_face_command_topic = "homeassistant/button/intercom/learn_new_face/command"
+        self.unlock_door_command_topic = "homeassistant/button/intercom/unlock_door/command"
+        self.recognize_face_command_topic = "homeassistant/button/intercom/recognize_face/command"
 
         self.mqtt_client = mqtt.Client()
         if self.mqtt_username and self.mqtt_password:
@@ -88,31 +88,31 @@ class MQTTHandler:
             {
                 "name": "Learn New Face",
                 "unique_id": "learn_new_face_button",
-                "command_topic": self.learn_face_command_topic,
+                "command_topic": self.learn_face_command_topic+"/command",
                 "device_class": "button",
                 "payload_press": "PRESS",
-                "state_topic": self.learn_face_command_topic
+                "state_topic": self.learn_face_command_topic+"/command"
             },
             {
                 "name": "Unlock Door",
                 "unique_id": "unlock_door_button",
-                "command_topic": self.unlock_door_command_topic,
+                "command_topic": self.unlock_door_command_topic+"/command",
                 "device_class": "button",
                 "payload_press": "PRESS",
-                "state_topic": self.unlock_door_command_topic
+                "state_topic": self.unlock_door_command_topic+"/command"
             },
             {
                 "name": "Recognize Face",
                 "unique_id": "recognize_face_button",
-                "command_topic": self.recognize_face_command_topic,
+                "command_topic": self.recognize_face_command_topic+"/command",
                 "device_class": "button",
                 "payload_press": "PRESS",
-                "state_topic": self.recognize_face_command_topic
+                "state_topic": self.recognize_face_command_topic+"/command"
             },
             {
                 "name": "Bell Run",
                 "unique_id": "bell_run_sensor",
-                "state_topic": self.bell_state_topic,
+                "state_topic": self.bell_state_topic+"/state"
                 "device_class": "motion",
                 "payload_on": "ON",
                 "payload_off": "OFF"
@@ -120,7 +120,7 @@ class MQTTHandler:
         ]
 
         for device in devices:
-            config_topic = f"homeassistant/{device['device_class']}/{device['unique_id']}/config"
+            config_topic = f"homeassistant/{device['device_class']}/intercom/{device['unique_id']}/config"
             payload = json.dumps(device)
             result = self.mqtt_client.publish(config_topic, payload, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:

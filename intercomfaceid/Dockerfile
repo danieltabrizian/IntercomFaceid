@@ -28,4 +28,4 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Run the Python script
-CMD ["python", "main.py"]
+CMD ["python","-u", "main.py"]
