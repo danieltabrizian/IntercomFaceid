@@ -22,8 +22,8 @@ class ArduinoHandler:
     def __init__(self, port='/dev/tty.usbserial-A50285BI', baudrate=9600, max_retries=30, retry_delay=5):
         config = self.load_config()
         if config is not None:
-            port = config.get('arduino_port', port)
-            baudrate = config.get('arduino_baudrate', baudrate)
+            self.port = config.get('arduino_port', port)
+            self.baudrate = config.get('arduino_baudrate', baudrate)
         else:
             self.port = port
             self.baudrate = baudrate
