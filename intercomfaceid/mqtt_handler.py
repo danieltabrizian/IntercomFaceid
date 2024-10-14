@@ -10,7 +10,7 @@ class MQTTHandler:
         self.mqtt_username = os.getenv("MQTT_USERNAME", "mqtt")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "mqtt")
 
-        self.bell_state_topic = "homeassistant/binary_sensor/bell_run"
+        self.bell_state_topic = "homeassistant/device_automation/intercom/action_single"
         self.learn_face_command_topic = "homeassistant/button/learn_new_face"
         self.unlock_door_command_topic = "homeassistant/button/unlock_door"
         self.recognize_face_command_topic = "homeassistant/button/recognize_face"
@@ -72,8 +72,8 @@ class MQTTHandler:
     def on_publish(self, client, userdata, mid):
         print(f"Message {mid} published successfully")
 
-    def publish_bell_state(self, state):
-        result = self.mqtt_client.publish(self.bell_state_topic + "/state", state)
+    def publish_bell_state(self):
+        result = self.mqtt_client.publish(self.bell_state_topic + "/state", "single")
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             print(f"Published bell state: {state}")
         else:
@@ -120,26 +120,30 @@ class MQTTHandler:
                 }
             },
             {
-                "name": "Bell Run",
-                "unique_id": "bell_run_sensor",
-                "state_topic": self.bell_state_topic + "/state",
-                "payload_on": "ON",
-                "payload_off": "OFF",
+                "name": "Bell Ring",
+                "unique_id": "bell_ring_sensor",
+                "topic": self.bell_state_topic"/state",
+                "automation_type":"trigger",
                 "device": {
-                    "identifiers": ["intercom"],
+                    "identifiers": [
+                    "intercom"
+                    ],
                     "name": "Intercom",
                     "model": "TCS Hack",
                     "manufacturer": "TCS Daniel",
-                    "sw_version": "1.X"
-                }
+                    "sw_version": "1.0"
+                },
+                "type": "action",
+                "subtype": "single",
+                "payload": "single"
             }
         ]
 
         for device in devices:
             if "command_topic" in device:
                 topic_base = device["command_topic"].rsplit('/', 1)[0]
-            elif "state_topic" in device:
-                topic_base = device["state_topic"].rsplit('/', 1)[0]
+            elif "topic" in device:
+                topic_base = device["topic"].rsplit('/', 1)[0]
             else:
                 continue
 

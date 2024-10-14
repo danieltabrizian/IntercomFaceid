@@ -54,7 +54,7 @@ def main():
             command = arduino.read_command()
             if command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F"):
                 logging.info(f"Received call command: {command}")
-                mqtt_client.publish_bell_state("ON")
+                mqtt_client.publish_bell_state()
                 if enable_face_recognition:
                     face_recognizer.captureFace()
 
