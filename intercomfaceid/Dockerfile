@@ -1,6 +1,6 @@
 FROM python:3.9-slim
 
-# Install system dependencies (build tools, g++, OpenCV)
+# Install system dependencies (build tools, g++, OpenCV, etc.)
 RUN apt-get update && apt-get install -y \
     build-essential \
     g++ \
@@ -11,9 +11,11 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-dev \
     libjpeg-dev \
     zlib1g-dev \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
     && apt-get clean
 
-# Install InsightFace and other Python dependencies
+# Install Python dependencies
 RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt
 
 # Set the working directory
