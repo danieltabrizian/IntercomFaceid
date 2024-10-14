@@ -21,4 +21,7 @@ options:
 schema:
   usb_port: str
   baudrate: int
-image: "docker.io/danieltabrizian/intercomfaceid:latest"
+build:
+  dockerfile: Dockerfile
+  args:
+    - BUILD_FROM=docker.io/danieltabrizian/intercomfaceid:latest"
