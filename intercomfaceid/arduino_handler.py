@@ -19,7 +19,7 @@ class ArduinoHandler:
         except json.JSONDecodeError as e:
             print(f"Error parsing the configuration file {file_path}: {e}")
         return None
-    def __init__(self, port='/dev/tty.usbserial-A50285BI', baudrate=9600, max_retries=30, retry_delay=5):
+    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, max_retries=30, retry_delay=5):
         config = self.load_config()
         if config is not None:
             self.port = config.get('arduino_port', port)
