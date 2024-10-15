@@ -11,7 +11,6 @@ import sys
 
 class FaceRecognizer:
     def __init__(self):
-        # Configure logging to output to stdout
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.FACE_DATA_FILE = "faces_data.json"
@@ -21,11 +20,38 @@ class FaceRecognizer:
         self.model.prepare(ctx_id=0)
         self.load_face_data()
 
+        self.video_capture = None
+        self.capture_thread = None
+        self.is_capturing = False
+        self.lock = threading.Lock()
+
     def set_arduino(self, arduino):
         self.arduino = arduino
 
     def set_mqtt_client(self, mqtt_client):
         self.mqtt_client = mqtt_client
+
+    def start_video_stream(self):
+        with self.lock:
+            if self.video_capture is None:
+                self.video_capture = cv2.VideoCapture(0)
+                if not self.video_capture.isOpened():
+                    logging.error("Failed to open the camera.")
+                    self.video_capture = None
+                    return False
+            return True
+
+    def stop_video_stream(self):
+        with self.lock:
+            if self.video_capture is not None:
+                self.video_capture.release()
+                self.video_capture = None
+
+    def get_frame(self):
+        with self.lock:
+            if self.video_capture is not None:
+                return self.video_capture.read()
+            return False, None
 
     def cosine_similarity(self, embedding1, embedding2):
         return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
@@ -62,12 +88,16 @@ class FaceRecognizer:
             person_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         logging.info(f"Learning new face for {person_name}...")
-        video_capture = cv2.VideoCapture(0)
+        
+        if not self.start_video_stream():
+            logging.error("Failed to start video stream. Cannot learn new face.")
+            return
+
         start_time = time.time()
-        session_embeddings = []  # Collect embeddings for the current face session
+        session_embeddings = []
 
         while time.time() - start_time < 10:
-            ret, frame = video_capture.read()
+            ret, frame = self.get_frame()
             if not ret:
                 logging.error("Failed to capture video")
                 break
@@ -118,22 +148,25 @@ class FaceRecognizer:
         self.save_face_data()
         if self.arduino is not None:
             self.arduino.unlock()
-        video_capture.release()
-        cv2.destroyAllWindows()
+        self.stop_video_stream()
         logging.info(f"Finished learning new face for {person_name}!")
 
     def captureFace(self, capture_time=30):
+        if self.is_capturing:
+            logging.info("Face capture is already in progress.")
+            return
+
         def capture_video():
-            video_capture = cv2.VideoCapture(0)
-            if not video_capture.isOpened():
-                logging.error("Failed to open the camera. Unlocking door immediately...")
+            if not self.start_video_stream():
+                logging.error("Failed to start video stream. Unlocking door immediately...")
                 if self.arduino is not None:
                     self.arduino.unlock()
                 return
+
             start_time = time.time()
 
-            while self.running:
-                ret, frame = video_capture.read()
+            while self.is_capturing:
+                ret, frame = self.get_frame()
                 if not ret:
                     logging.error("Failed to capture video")
                     break
@@ -164,10 +197,9 @@ class FaceRecognizer:
                     logging.info("Capture time exceeded. Stopping capture.")
                     break
 
-            video_capture.release()
-            cv2.destroyAllWindows()
-            self.running = False
+            self.stop_video_stream()
+            self.is_capturing = False
 
-        self.running = True
+        self.is_capturing = True
         self.capture_thread = threading.Thread(target=capture_video)
         self.capture_thread.start()
