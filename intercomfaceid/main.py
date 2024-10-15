@@ -1,11 +1,11 @@
-import facial_recognition
+from stream_manager import StreamManager
+from face_recognizer import FaceRecognizer
 import mqtt_handler
 import arduino_handler
 import time
 import threading
 import logging
 import sys
-
 
 def main():
     # Configure logging to output to stdout
@@ -14,15 +14,18 @@ def main():
     # Flags to enable/disable components
     enable_face_recognition = True
     enable_mqtt = True
-    enable_arduino = True
+    enable_arduino = False
 
     face_recognizer = None
     arduino = None
     mqtt_client = None
 
+    
+
     # Initialize components
     if enable_face_recognition:
-        face_recognizer = facial_recognition.FaceRecognizer()
+        stream_manager = StreamManager("http://homeassistant.local:9081")
+        face_recognizer = FaceRecognizer(stream_manager)
     if enable_arduino:
         arduino = arduino_handler.ArduinoHandler()
     if enable_mqtt: 
@@ -37,8 +40,6 @@ def main():
     if enable_mqtt:
         mqtt_client.set_face_recognizer(face_recognizer)
         mqtt_client.set_arduino(arduino)
-
-    # face_recognizer.learn_new_face()
 
     while True:
 
