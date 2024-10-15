@@ -6,11 +6,6 @@ import threading
 import logging
 import sys
 
-def turn_bell_off(mqtt_client):
-    """Turn the bell state OFF after 10 seconds."""
-    time.sleep(10)
-    mqtt_client.publish_bell_state("OFF")
-    logging.info("Bell state turned OFF")
 
 def main():
     # Configure logging to output to stdout
@@ -54,9 +49,17 @@ def main():
             command = arduino.read_command()
             if command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F"):
                 logging.info(f"Received call command: {command}")
-                mqtt_client.publish_bell_state()
+                if enable_mqtt:
+                    try:
+                        mqtt_client.publish_bell_state()
+                    except Exception as e:
+                        logging.error(f"Error publishing bell state: {e}")
+                
                 if enable_face_recognition:
-                    face_recognizer.captureFace()
+                    try:
+                        face_recognizer.captureFace()
+                    except Exception as e:
+                        logging.error(f"Error recognizing face: {e}")
 
                 # Start a non-blocking timer to turn off the bell after 10 seconds
                 threading.Thread(target=turn_bell_off, args=(mqtt_client,), daemon=True).start()

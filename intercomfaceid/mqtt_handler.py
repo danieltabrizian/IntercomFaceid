@@ -75,9 +75,9 @@ class MQTTHandler:
     def publish_bell_state(self):
         result = self.mqtt_client.publish(self.bell_state_topic + "/state", "single")
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            print(f"Published bell state: {state}")
+            print(f"Published bell state")
         else:
-            print(f"Failed to publish bell state: {state}")
+            print(f"Failed to publish bell state")
 
     def broadcast_device_types(self):
         print("Broadcasting device types...")
