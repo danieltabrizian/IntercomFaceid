@@ -31,6 +31,7 @@ class FaceRecognizer:
     def save_face_data(self):
         face_data = {
             "encodings": [[face.tolist() for face in faces] for faces in self.known_face_encodings],
+            "encodings": [[face.tolist() for face in faces] for faces in self.known_face_encodings],
             "names": self.known_face_names
         }
         with open(self.FACE_DATA_FILE, 'w') as f:
