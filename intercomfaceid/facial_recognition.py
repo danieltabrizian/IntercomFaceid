@@ -12,12 +12,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import io
 
+
+
 class FaceRecognizer:
     class MJPEGStreamHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/':
                 self.send_response(200)
-                self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--jpgboundary')
+                self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=frame')
                 self.end_headers()
                 try:
                     while True:
@@ -25,11 +27,12 @@ class FaceRecognizer:
                         if jpg is None:
                             time.sleep(0.1)
                             continue
-                        self.wfile.write("--jpgboundary".encode())
+                        self.wfile.write(b'--frame\r\n')
                         self.send_header('Content-type', 'image/jpeg')
-                        self.send_header('Content-length', str(len(jpg)))
+                        self.send_header('Content-length', len(jpg))
                         self.end_headers()
                         self.wfile.write(jpg)
+                        self.wfile.write(b'\r\n')
                 except Exception as e:
                     logging.error(f"Streaming client {self.client_address} disconnected: {str(e)}")
             elif self.path == '/health':
@@ -41,17 +44,17 @@ class FaceRecognizer:
                 self.send_error(404)
                 self.end_headers()
 
+
         def log_message(self, format, *args):
             # Suppress default logging to reduce noise
             return
 
-   class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
-
         def __init__(self, face_recognizer, *args, **kwargs):
             self.face_recognizer = face_recognizer
             super().__init__(*args, **kwargs)
-
+    
     def __init__(self, stream_port=8080):
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -129,7 +132,7 @@ class FaceRecognizer:
                     return jpg.tobytes()
         return None
 
-   def start_mjpeg_server(self):
+    def start_mjpeg_server(self):
         try:
             server = self.ThreadedHTTPServer(self, ('0.0.0.0', self.stream_port), self.MJPEGStreamHandler)
             server_thread = threading.Thread(target=server.serve_forever)
