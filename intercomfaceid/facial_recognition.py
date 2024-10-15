@@ -22,19 +22,32 @@ class FaceRecognizer:
                 try:
                     while True:
                         jpg = self.server.face_recognizer.get_jpg_frame()
+                        if jpg is None:
+                            time.sleep(0.1)
+                            continue
                         self.wfile.write("--jpgboundary".encode())
                         self.send_header('Content-type', 'image/jpeg')
                         self.send_header('Content-length', str(len(jpg)))
                         self.end_headers()
                         self.wfile.write(jpg)
-                        time.sleep(0.05)
                 except Exception as e:
-                    logging.error(f"Removed streaming client {self.client_address}: {str(e)}")
+                    logging.error(f"Streaming client {self.client_address} disconnected: {str(e)}")
+            elif self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b"Stream is running")
             else:
                 self.send_error(404)
                 self.end_headers()
 
-    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        def log_message(self, format, *args):
+            # Suppress default logging to reduce noise
+            return
+
+   class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
         def __init__(self, face_recognizer, *args, **kwargs):
             self.face_recognizer = face_recognizer
             super().__init__(*args, **kwargs)
@@ -75,6 +88,7 @@ class FaceRecognizer:
     def start_video_stream(self):
         if self.stream_thread is None or not self.stream_thread.is_alive():
             self.stream_thread = threading.Thread(target=self._stream_video)
+            self.stream_thread.daemon = True
             self.stream_thread.start()
 
     def _stream_video(self):
@@ -115,12 +129,30 @@ class FaceRecognizer:
                     return jpg.tobytes()
         return None
 
-    def start_mjpeg_server(self):
-        server = self.ThreadedHTTPServer(self, ('', self.stream_port), self.MJPEGStreamHandler)
-        server_thread = threading.Thread(target=server.serve_forever)
-        server_thread.daemon = True
-        server_thread.start()
-        logging.info(f"MJPEG server started on port {self.stream_port}")
+   def start_mjpeg_server(self):
+        try:
+            server = self.ThreadedHTTPServer(self, ('0.0.0.0', self.stream_port), self.MJPEGStreamHandler)
+            server_thread = threading.Thread(target=server.serve_forever)
+            server_thread.daemon = True
+            server_thread.start()
+            logging.info(f"MJPEG server started on port {self.stream_port}")
+            
+            # Get the actual IP address
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                # doesn't even have to be reachable
+                s.connect(('10.255.255.255', 1))
+                ip = s.getsockname()[0]
+            except Exception:
+                ip = '127.0.0.1'
+            finally:
+                s.close()
+            
+            logging.info(f"Stream available at http://{ip}:{self.stream_port}")
+            logging.info(f"Health check available at http://{ip}:{self.stream_port}/health")
+        except Exception as e:
+            logging.error(f"Failed to start MJPEG server: {e}")
+
 
     def _process_frame(self, frame):
         try:
