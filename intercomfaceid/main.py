@@ -22,7 +22,7 @@ def main():
 
     # Initialize components
     if enable_face_recognition:
-        face_recognizer = facial_recognition.FaceRecognizer()
+        face_recognizer = facial_recognition.FaceRecognizer(stream=5123)
     if enable_arduino:
         arduino = arduino_handler.ArduinoHandler()
     if enable_mqtt: 

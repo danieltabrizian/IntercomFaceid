@@ -8,12 +8,41 @@ import threading
 from datetime import datetime
 import logging
 import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+import io
 
 class FaceRecognizer:
-    def __init__(self):
+    class MJPEGStreamHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--jpgboundary')
+                self.end_headers()
+                try:
+                    while True:
+                        jpg = self.server.face_recognizer.get_jpg_frame()
+                        self.wfile.write("--jpgboundary".encode())
+                        self.send_header('Content-type', 'image/jpeg')
+                        self.send_header('Content-length', str(len(jpg)))
+                        self.end_headers()
+                        self.wfile.write(jpg)
+                        time.sleep(0.05)
+                except Exception as e:
+                    logging.error(f"Removed streaming client {self.client_address}: {str(e)}")
+            else:
+                self.send_error(404)
+                self.end_headers()
+
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        def __init__(self, face_recognizer, *args, **kwargs):
+            self.face_recognizer = face_recognizer
+            super().__init__(*args, **kwargs)
+
+    def __init__(self, stream_port=8080):
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-        self.FACE_DATA_FILE = "faces_data.json"
+        self.FACE_DATA_FILE = "/config/faces_data.json"
         self.known_face_encodings = []
         self.known_face_names = []
         self.model = insightface.app.FaceAnalysis()
@@ -21,9 +50,21 @@ class FaceRecognizer:
         self.load_face_data()
 
         self.video_capture = None
-        self.capture_thread = None
         self.is_capturing = False
         self.lock = threading.Lock()
+        self.stream_thread = None
+        self.face_detection_active = False
+        self.stream_port = stream_port
+        self.current_frame = None
+
+        self.arduino = None
+        self.mqtt_client = None
+
+        # Start the video stream immediately
+        self.start_video_stream()
+
+        # Start the MJPEG server
+        self.start_mjpeg_server()
 
     def set_arduino(self, arduino):
         self.arduino = arduino
@@ -32,33 +73,92 @@ class FaceRecognizer:
         self.mqtt_client = mqtt_client
 
     def start_video_stream(self):
-        with self.lock:
-            if self.video_capture is None:
-                self.video_capture = cv2.VideoCapture(0)
-                if not self.video_capture.isOpened():
-                    logging.error("Failed to open the camera.")
+        if self.stream_thread is None or not self.stream_thread.is_alive():
+            self.stream_thread = threading.Thread(target=self._stream_video)
+            self.stream_thread.start()
+
+    def _stream_video(self):
+        while True:
+            try:
+                if self.video_capture is None or not self.video_capture.isOpened():
+                    self.video_capture = cv2.VideoCapture(0)
+                    if not self.video_capture.isOpened():
+                        logging.error("Failed to open the camera. Retrying in 5 seconds...")
+                        time.sleep(5)
+                        continue
+                    logging.info("Video stream started.")
+
+                while True:
+                    ret, frame = self.video_capture.read()
+                    if not ret:
+                        logging.error("Failed to capture frame. Restarting stream...")
+                        break
+
+                    with self.lock:
+                        self.current_frame = frame
+
+                    if self.face_detection_active:
+                        self._process_frame(frame)
+
+            except Exception as e:
+                logging.error(f"Error in video stream: {e}. Restarting stream...")
+                if self.video_capture is not None:
+                    self.video_capture.release()
                     self.video_capture = None
-                    return False
-            return True
+                time.sleep(5)
 
-    def stop_video_stream(self):
+    def get_jpg_frame(self):
         with self.lock:
-            if self.video_capture is not None:
-                self.video_capture.release()
-                self.video_capture = None
+            if self.current_frame is not None:
+                ret, jpg = cv2.imencode('.jpg', self.current_frame)
+                if ret:
+                    return jpg.tobytes()
+        return None
 
-    def get_frame(self):
-        with self.lock:
-            if self.video_capture is not None:
-                return self.video_capture.read()
-            return False, None
+    def start_mjpeg_server(self):
+        server = self.ThreadedHTTPServer(self, ('', self.stream_port), self.MJPEGStreamHandler)
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.daemon = True
+        server_thread.start()
+        logging.info(f"MJPEG server started on port {self.stream_port}")
+
+    def _process_frame(self, frame):
+        try:
+            embedding = self.get_face_embedding(frame)
+            if embedding is None:
+                return
+
+            similarities = []
+            for i, known_faces in enumerate(self.known_face_encodings):
+                face_similarities = [self.cosine_similarity(embedding, known_face) for known_face in known_faces]
+                similarities.append(np.max(face_similarities))
+
+            if similarities:
+                best_match_index = np.argmax(similarities)
+                if similarities[best_match_index] > 0.5:
+                    logging.info(f"Face recognized as {self.known_face_names[best_match_index]} with {similarities[best_match_index] * 100:.2f}% similarity! Unlocking door...")
+                    if self.arduino is not None:
+                        self.arduino.unlock()
+                    self.face_detection_active = False
+                else:
+                    logging.info(f"Unknown face with {similarities[best_match_index] * 100:.2f}% similarity. Access denied.")
+
+        except Exception as e:
+            logging.error(f"Error during face comparison: {e}")
+
+    def activate_face_detection(self, duration=30):
+        self.face_detection_active = True
+        threading.Timer(duration, self._deactivate_face_detection).start()
+
+    def _deactivate_face_detection(self):
+        self.face_detection_active = False
 
     def cosine_similarity(self, embedding1, embedding2):
         return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
 
     def save_face_data(self):
         face_data = {
-            "encodings": [[face.tolist() for face in faces] for faces in self.known_face_encodings],  # Save as lists of embeddings per person
+            "encodings": [[face.tolist() for face in faces] for faces in self.known_face_encodings],
             "names": self.known_face_names
         }
         with open(self.FACE_DATA_FILE, 'w') as f:
@@ -81,7 +181,7 @@ class FaceRecognizer:
             embedding = faces[0].embedding
             return np.array(embedding)
         else:
-            raise ValueError("No face detected")
+            return None
 
     def learn_new_face(self, person_name=None):
         if person_name is None:
@@ -89,18 +189,17 @@ class FaceRecognizer:
 
         logging.info(f"Learning new face for {person_name}...")
         
-        if not self.start_video_stream():
-            logging.error("Failed to start video stream. Cannot learn new face.")
-            return
-
         start_time = time.time()
         session_embeddings = []
 
         while time.time() - start_time < 10:
-            ret, frame = self.get_frame()
-            if not ret:
-                logging.error("Failed to capture video")
-                break
+            with self.lock:
+                frame = self.current_frame.copy() if self.current_frame is not None else None
+            
+            if frame is None:
+                logging.error("Failed to get current frame")
+                time.sleep(0.1)
+                continue
 
             try:
                 embedding = self.get_face_embedding(frame)
@@ -148,58 +247,8 @@ class FaceRecognizer:
         self.save_face_data()
         if self.arduino is not None:
             self.arduino.unlock()
-        self.stop_video_stream()
         logging.info(f"Finished learning new face for {person_name}!")
 
-    def captureFace(self, capture_time=30):
-        if self.is_capturing:
-            logging.info("Face capture is already in progress.")
-            return
-
-        def capture_video():
-            if not self.start_video_stream():
-                logging.error("Failed to start video stream. Unlocking door immediately...")
-                if self.arduino is not None:
-                    self.arduino.unlock()
-                return
-
-            start_time = time.time()
-
-            while self.is_capturing:
-                ret, frame = self.get_frame()
-                if not ret:
-                    logging.error("Failed to capture video")
-                    break
-
-                try:
-                    embedding = self.get_face_embedding(frame)
-                    if embedding is None:
-                        continue
-
-                    similarities = []
-                    for i, known_faces in enumerate(self.known_face_encodings):
-                        face_similarities = [self.cosine_similarity(embedding, known_face) for known_face in known_faces]
-                        similarities.append(np.max(face_similarities))
-
-                    if similarities:
-                        best_match_index = np.argmax(similarities)
-                        if similarities[best_match_index] > 0.5:
-                            logging.info(f"Face recognized as {self.known_face_names[best_match_index]} with {similarities[best_match_index] * 100:.2f}% similarity! Unlocking door...")
-                            if self.arduino is not None:
-                                self.arduino.unlock()
-                            break
-                        else:
-                            logging.info(f"Unknown face with {similarities[best_match_index] * 100:.2f}% similarity. Access denied.")
-                except Exception as e:
-                    logging.error(f"Error during face comparison: {e}")
-
-                if time.time() - start_time >= capture_time:
-                    logging.info("Capture time exceeded. Stopping capture.")
-                    break
-
-            self.stop_video_stream()
-            self.is_capturing = False
-
-        self.is_capturing = True
-        self.capture_thread = threading.Thread(target=capture_video)
-        self.capture_thread.start()
+    def __del__(self):
+        if self.video_capture is not None:
+            self.video_capture.release()
