@@ -150,7 +150,7 @@ class FaceRecognizer:
 
                     if similarities:
                         best_match_index = np.argmax(similarities)
-                        if similarities[best_match_index] > 0.7:
+                        if similarities[best_match_index] > 0.5:
                             logging.info(f"Face recognized as {self.known_face_names[best_match_index]} with {similarities[best_match_index] * 100:.2f}% similarity! Unlocking door...")
                             if self.arduino is not None:
                                 self.arduino.unlock()

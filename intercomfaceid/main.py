@@ -61,9 +61,6 @@ def main():
                     except Exception as e:
                         logging.error(f"Error recognizing face: {e}")
 
-                # Start a non-blocking timer to turn off the bell after 10 seconds
-                threading.Thread(target=turn_bell_off, args=(mqtt_client,), daemon=True).start()
-
             elif command == "unlock":
                 logging.info("Received unlock command")
                 # Add logic to unlock the door
