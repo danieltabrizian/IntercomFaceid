@@ -14,7 +14,7 @@ def main():
     # Flags to enable/disable components
     enable_face_recognition = True
     enable_mqtt = True
-    enable_arduino = False
+    enable_arduino = True
 
     face_recognizer = None
     arduino = None
