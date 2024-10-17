@@ -67,10 +67,11 @@ class MQTTHandler:
             print("Received command to recognize face")
             if self.face_recognizer:
                 name = self.face_recognizer.captureFace()
-                if name:
-                    self.mqtt_client.publish(self.face_recognition_result_topic + "/state", person_name)
             else:
                 print("Face recognizer not set")
+
+    def publish_face_recognized(self, person_name):
+        self.mqtt_client.publish(self.face_recognition_result_topic + "/state", person)
 
     def on_publish(self, client, userdata, mid):
         print(f"Message {mid} published successfully")
