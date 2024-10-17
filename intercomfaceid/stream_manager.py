@@ -108,12 +108,12 @@ class StreamManager:
                         break
 
                 # Log frame rate every 5 seconds
-                current_time = time.time()
-                if current_time - start_time >= 5.0:
-                    fps = frame_counter / 5.0  # Calculate frames per second
-                    logging.info(f"Current frame rate: {fps:.2f} FPS")
-                    start_time = current_time  # Reset start time
-                    frame_counter = 0  # Reset frame counter
+                # current_time = time.time()
+                # if current_time - start_time >= 5.0:
+                #     fps = frame_counter / 5.0  # Calculate frames per second
+                #     logging.info(f"Current frame rate: {fps:.2f} FPS")
+                #     start_time = current_time  # Reset start time
+                #     frame_counter = 0  # Reset frame counter
 
             except Exception as e:
                 logging.error(f"Error in stream capture: {str(e)}")
