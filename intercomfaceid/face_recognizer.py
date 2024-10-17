@@ -9,7 +9,7 @@ import logging
 
 class FaceRecognizer:
     def __init__(self, stream_manager):
-        self.FACE_DATA_FILE = "faces_data.json"
+        self.FACE_DATA_FILE = os.path.join("/config", "faces_data.json")
         self.known_face_encodings = []
         self.known_face_names = []
         self.model = insightface.app.FaceAnalysis()
@@ -65,15 +65,29 @@ class FaceRecognizer:
 
         start_time = time.time()
         frame_processed = False
+        frame_counter = 0
+        frame_rate_start_time = time.time()  # Initialize the timer for frame rate calculation
 
         while time.time() - start_time < capture_time:
             ret, frame = self.stream_manager.get_frame()
             if not ret:
-                time.sleep(0.1)
                 continue
+            
             frame_processed = True
+            frame_counter += 1  # Increment the frame counter
+
             try:
+                embedding_start_time = time.time()
                 embedding = self.get_face_embedding(frame)
+
+                 # Log frame rate every second
+                current_time = time.time()
+                if current_time - frame_rate_start_time >= 1.0:
+                    fps = frame_counter / (current_time - frame_rate_start_time)  # Calculate frames per second
+                    logging.info(f"Current frame rate during recognition: {fps:.2f} FPS")
+                    frame_rate_start_time = current_time  # Reset the timer
+                    frame_counter = 0  # Reset the frame counter
+
                 if embedding is None:
                     continue
 
@@ -91,12 +105,17 @@ class FaceRecognizer:
                         return  # Exit the method after successful recognition
                     else:
                         logging.info(f"Unknown face with {similarities[best_match_index] * 100:.2f}% similarity. Access denied.")
+
+
+
             except Exception as e:
                 logging.error(f"Error during face comparison: {e}")
 
         if not frame_processed:
             logging.warning("No frames were processed during the capture period.")
+        logging.warning("Face not recognized. Access denied.")
 
+    
     def learn_new_face(self, person_name=None):
         if person_name is None:
             person_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
