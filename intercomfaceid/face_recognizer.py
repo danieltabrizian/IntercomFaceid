@@ -105,9 +105,9 @@ class FaceRecognizer:
                         logging.info(f"Face recognized as {self.known_face_names[best_match_index]} with {similarities[best_match_index] * 100:.2f}% similarity! Unlocking door...")
                         if self.arduino is not None:
                             self.arduino.unlock()
-                        return  # Exit the method after successful recognition
-                    else:
-                        logging.info(f"Unknown face with {similarities[best_match_index] * 100:.2f}% similarity. Access denied.")
+                        return  self.known_face_names[best_match_index]
+
+                    logging.info(f"Unknown face with {similarities[best_match_index] * 100:.2f}% similarity. Access denied.")
 
 
 

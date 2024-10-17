@@ -14,6 +14,7 @@ class MQTTHandler:
         self.learn_face_command_topic = "homeassistant/button/learn_new_face"
         self.unlock_door_command_topic = "homeassistant/button/unlock_door"
         self.recognize_face_command_topic = "homeassistant/button/recognize_face"
+        self.face_recognition_result_topic = "homeassistant/sensor/recognized_person"
 
         self.mqtt_client = mqtt.Client()
         if self.mqtt_username and self.mqtt_password:
@@ -65,7 +66,9 @@ class MQTTHandler:
         elif msg.topic == self.recognize_face_command_topic + "/command":
             print("Received command to recognize face")
             if self.face_recognizer:
-                self.face_recognizer.captureFace()
+                name = self.face_recognizer.captureFace()
+                if name:
+                    self.mqtt_client.publish(self.face_recognition_result_topic + "/state", person_name)
             else:
                 print("Face recognizer not set")
 
@@ -136,6 +139,22 @@ class MQTTHandler:
                 "type": "action",
                 "subtype": "single",
                 "payload": "single"
+            },
+            {
+                "name": "Recognized Person",
+                "unique_id": "recognized_person_sensor",
+                "state_topic": self.face_recognition_result_topic+"/state",
+                "expire_after": 5,
+                "device": {
+                    "identifiers": [
+                    "intercom"
+                    ],
+                    "name": "Intercom",
+                    "model": "TCS Hack",
+                    "manufacturer": "TCS Daniel",
+                    "sw_version": "1.0"
+                },
+                "type": "sensor"
             }
         ]
 
@@ -144,6 +163,8 @@ class MQTTHandler:
                 topic_base = device["command_topic"].rsplit('/', 1)[0]
             elif "topic" in device:
                 topic_base = device["topic"].rsplit('/', 1)[0]
+            elif "state_topic" in device:
+                topic_base = device["state_topic"].rsplit('/', 1)[0]
             else:
                 continue
 
