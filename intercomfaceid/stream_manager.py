@@ -64,7 +64,6 @@ class StreamManager:
         bytes_buffer = bytes()
         frame_counter = 0
         start_time = time.time()  # Record the start time for frame rate calculation
-        last_processed_time = time.time()  # To track frame processing intervals
 
         while self.is_capturing:
             try:
@@ -82,25 +81,24 @@ class StreamManager:
                         bytes_buffer = bytes_buffer[b + 2:]  # Keep any remaining bytes
                         frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-                        # Limit processing to the target FPS (7 FPS)
-                        current_time = time.time()
-                        if current_time - last_processed_time >= self.frame_interval:
-                            if frame is not None:
-                                with self.lock:
-                                    self.current_frame = frame
-                                    self.last_frame_time = time.time()
-                                    self.frame_count += 1
-                                    frame_counter += 1  # Increment the frame counter
+                        if frame is not None:
+                            with self.lock:
+                                self.current_frame = frame
+                                self.last_frame_time = time.time()
+                                self.frame_count += 1
+                                frame_counter += 1  # Increment the frame counter
+                                try:
+                                    # Attempt to put the frame in the queue
+                                    self.frame_queue.put(frame, block=False)
+                                except queue.Full:
                                     try:
-                                        # Attempt to put the frame in the queue
-                                        self.frame_queue.put(frame, block=False)
-                                    except queue.Full:
-                                        try:
-                                            self.frame_queue.get_nowait()  # Remove the oldest frame
-                                            self.frame_queue.put(frame, block=False)  # Add the new frame
-                                        except queue.Empty:
-                                            pass  # This should not happen as we're managing the size
-                            last_processed_time = current_time  # Update the last processed time
+                                        self.frame_queue.get_nowait()  # Remove the oldest frame
+                                        self.frame_queue.put(frame, block=False)  # Add the new frame
+                                    except queue.Empty:
+                                        pass  # This should not happen as we're managing the size
+                            
+                            # Sleep to limit processing to 7 FPS
+                            time.sleep(self.frame_interval)
 
                         break  # Exit the while loop to start capturing the next frame
                     else:
