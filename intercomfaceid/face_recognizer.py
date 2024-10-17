@@ -12,7 +12,7 @@ class FaceRecognizer:
         self.FACE_DATA_FILE = os.path.join("/config", "faces_data.json")
         self.known_face_encodings = []
         self.known_face_names = []
-        self.model = insightface.app.FaceAnalysis()
+        self.model = insightface.app.FaceAnalysis(name="buffalo_sc")
         self.model.prepare(ctx_id=0)
         self.load_face_data()
         self.stream_manager = stream_manager
@@ -49,7 +49,8 @@ class FaceRecognizer:
             logging.info("No face data file found, starting with an empty face database.")
 
     def get_face_embedding(self, image):
-        faces = self.model.get(image)
+        small_image = cv2.resize(image, (320, 240))
+        faces = self.model.get(small_image)
         if len(faces) > 0:
             embedding = faces[0].embedding
             return np.array(embedding)
