@@ -8,7 +8,7 @@ from requests.exceptions import RequestException
 import queue
 
 class StreamManager:
-    def __init__(self, stream_url, max_retry_attempts=3, retry_delay=5):
+    def __init__(self, stream_url, max_retry_attempts=3, retry_delay=5, target_fps=7):
         self.stream_url = stream_url
         self.current_frame = None
         self.last_frame_time = 0
@@ -21,6 +21,8 @@ class StreamManager:
         self.retry_delay = retry_delay
         self.watchdog_thread = None
         self.frame_queue = queue.Queue(maxsize=10)
+        self.target_fps = target_fps
+        self.frame_interval = 1.0 / self.target_fps  # Time per frame (in seconds)
 
         # Start the stream immediately upon initialization
         self.start_video_stream()
@@ -62,6 +64,7 @@ class StreamManager:
         bytes_buffer = bytes()
         frame_counter = 0
         start_time = time.time()  # Record the start time for frame rate calculation
+        last_processed_time = time.time()  # To track frame processing intervals
 
         while self.is_capturing:
             try:
@@ -78,22 +81,28 @@ class StreamManager:
                         jpg = bytes_buffer[a:b + 2]
                         bytes_buffer = bytes_buffer[b + 2:]  # Keep any remaining bytes
                         frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        if frame is not None:
-                            with self.lock:
-                                self.current_frame = frame
-                                self.last_frame_time = time.time()
-                                self.frame_count += 1
-                                frame_counter += 1  # Increment the frame counter
-                                try:
-                                    # Attempt to put the frame in the queue
-                                    self.frame_queue.put(frame, block=False)
-                                except queue.Full:
+
+                        # Limit processing to the target FPS (7 FPS)
+                        current_time = time.time()
+                        if current_time - last_processed_time >= self.frame_interval:
+                            if frame is not None:
+                                with self.lock:
+                                    self.current_frame = frame
+                                    self.last_frame_time = time.time()
+                                    self.frame_count += 1
+                                    frame_counter += 1  # Increment the frame counter
                                     try:
-                                        self.frame_queue.get_nowait()  # Remove the oldest frame
-                                        self.frame_queue.put(frame, block=False)  # Add the new frame
-                                    except queue.Empty:
-                                        pass  # This should not happen as we're managing the size
-                            break  # Exit the while loop to start capturing the next frame
+                                        # Attempt to put the frame in the queue
+                                        self.frame_queue.put(frame, block=False)
+                                    except queue.Full:
+                                        try:
+                                            self.frame_queue.get_nowait()  # Remove the oldest frame
+                                            self.frame_queue.put(frame, block=False)  # Add the new frame
+                                        except queue.Empty:
+                                            pass  # This should not happen as we're managing the size
+                            last_processed_time = current_time  # Update the last processed time
+
+                        break  # Exit the while loop to start capturing the next frame
                     else:
                         # Break out if we don't have a full frame yet
                         break
@@ -117,53 +126,12 @@ class StreamManager:
             self.stream.close()
         logging.info("MJPEG stream capture stopped.")
 
-
     def get_frame(self):
         try:
             frame = self.frame_queue.get_nowait()
             return True, frame
         except queue.Empty:
             return False, None
-        bytes_buffer = bytes()
-        consecutive_errors = 0
-        while self.is_capturing:
-            try:
-                chunk = self.stream.raw.read(1024)
-                if not chunk:
-                    raise Exception("No data received from stream.")
-                
-                bytes_buffer += chunk
-                a = bytes_buffer.find(b'\xff\xd8')
-                b = bytes_buffer.find(b'\xff\xd9')
-                if a != -1 and b != -1:
-                    jpg = bytes_buffer[a:b+2]
-                    bytes_buffer = bytes_buffer[b+2:]
-                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if frame is not None:
-                        with self.lock:
-                            self.current_frame = frame
-                            self.last_frame_time = time.time()
-                            self.frame_count += 1
-                            if self.frame_count % 100 == 0:
-                                logging.info(f"Received {self.frame_count} frames")
-                        consecutive_errors = 0
-                    else:
-                        logging.warning("Received invalid frame data")
-                        consecutive_errors += 1
-            except Exception as e:
-                logging.error(f"Error in stream capture: {str(e)}")
-                consecutive_errors += 1
-            
-            if consecutive_errors >= 5:
-                logging.error("Too many consecutive errors. Restarting stream...")
-                self.restart_stream()
-                consecutive_errors = 0
-            
-            time.sleep(0.01)  # Small delay to prevent CPU overuse in case of rapid errors
-
-        if self.stream:
-            self.stream.close()
-        logging.info("MJPEG stream capture stopped.")
 
     def restart_stream(self):
         logging.info("Attempting to restart the video stream...")
@@ -195,7 +163,6 @@ class StreamManager:
             if self.is_capturing and time.time() - self.last_frame_time > 30:
                 logging.warning("No frames received for 30 seconds. Restarting stream...")
                 self.restart_stream()
-
 
     def __del__(self):
         self.stop_video_stream()
