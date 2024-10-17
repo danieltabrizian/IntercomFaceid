@@ -5,6 +5,7 @@ import os
 import time
 from datetime import datetime
 import logging
+import cv2
 
 
 class FaceRecognizer:
