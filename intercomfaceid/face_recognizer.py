@@ -48,6 +48,7 @@ class FaceRecognizer:
             logging.info(f"Loaded face data from {self.FACE_DATA_FILE}")
         else:
             logging.info("No face data file found, starting with an empty face database.")
+            self.save_face_data()
 
     def get_face_embedding(self, image):
         small_image = cv2.resize(image, (320, 240))

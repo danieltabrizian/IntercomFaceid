@@ -1,6 +1,5 @@
-# https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: Face ID for Intercom
-version: "1.7.5"
+version: "1.7.6"
 slug: faceid_intercom
 description: FaceId for Intercom
 url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
@@ -12,21 +11,16 @@ arch:
   - i386
 init: false
 map:
-  - config:rw
+  - config:rw  # Access to the Home Assistant config folder
+  - share:rw   # Access to the Home Assistant share folder
 hassio_api: true
 memory: "4096M"
 devices:
-  - /dev/ttyUSB0:/dev/ttyUSB0
-  - /dev/video0:/dev/video0
-map:
-  - share:rw
+  - /dev/ttyUSB0:/dev/ttyUSB0  # USB device for intercom
+  - /dev/video0:/dev/video0    # Video device, likely a camera
 options:
   usb_port: "/dev/ttyUSB0"
   baudrate: 9600
 schema:
   usb_port: str
-  baudrate: int
-build:
-  dockerfile: Dockerfile
-  args:
-    - BUILD_FROM=docker.io/danieltabrizian/intercomfaceid:latest"
+ ​⬤
