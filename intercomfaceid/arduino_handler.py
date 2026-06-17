@@ -4,10 +4,10 @@ import json
 import os
 import logging
 import sys
+import threading
 
 class ArduinoHandler:
-    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, max_retries=30, retry_delay=5):
-        # Configure logging to output to stdout
+    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, retry_delay=5):
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
         config = self.load_config()
@@ -18,83 +18,148 @@ class ArduinoHandler:
             self.port = port
             self.baudrate = baudrate
 
-        self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.ser = None  # Initialize serial object
+        self.ser = None
         self.mqtt_client = None
+        self._lock = threading.Lock()
+        self._last_activity = time.time()
+        self._reconnecting = False       # guard: only one reconnect at a time
+        self._disconnected_since = None  # set when we lose connection; drives hard restart
         self.connect()
+        self._start_watchdog()
 
     def load_config(self, file_path='/data/options.json'):
-        """Load the Home Assistant add-on configuration from options.json."""
         if not os.path.exists(file_path):
             logging.warning(f"Configuration file {file_path} not found.")
             return None
-
         try:
             with open(file_path, 'r') as file:
-                config = json.load(file)
-                return config
+                return json.load(file)
         except json.JSONDecodeError as e:
             logging.error(f"Error parsing the configuration file {file_path}: {e}")
         return None
 
     def connect(self):
-        """Attempt to connect to the Arduino via serial with retries."""
-        retries = 0
-        while retries < self.max_retries:
+        """Attempt to connect to the Arduino, retrying indefinitely.
+        If called after a disconnect and no connection after 10 minutes, exits
+        the process so the HA supervisor restarts the add-on cleanly."""
+        attempt = 0
+        while True:
+            # Hard restart after 10 minutes of failed reconnection attempts.
+            with self._lock:
+                disconnected_since = self._disconnected_since
+            if disconnected_since is not None and time.time() - disconnected_since > 600:
+                logging.error("Could not reconnect to Arduino after 10 minutes. Triggering add-on restart...")
+                sys.exit(1)
+
             try:
-                self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
-                time.sleep(2)  # Wait for the serial connection to initialize
+                ser = serial.Serial(self.port, self.baudrate, timeout=1)
+                time.sleep(2)
+                with self._lock:
+                    self.ser = ser
+                    self._last_activity = time.time()
+                    self._disconnected_since = None  # clear on successful connect
                 logging.info(f"Connected to Arduino on {self.port}")
                 return
-            except serial.SerialException as e:
-                retries += 1
-                logging.warning(f"Failed to connect to Arduino (attempt {retries}/{self.max_retries}): {e}")
-                time.sleep(self.retry_delay)
+            except (serial.SerialException, OSError) as e:
+                attempt += 1
+                delay = min(self.retry_delay * attempt, 60)
+                logging.warning(f"Failed to connect to Arduino (attempt {attempt}): {e}. Retrying in {delay}s...")
+                time.sleep(delay)
 
-        logging.error(f"Failed to connect after {self.max_retries} attempts. Running in disconnected mode.")
+    def _start_watchdog(self):
+        t = threading.Thread(target=self._watchdog, daemon=True)
+        t.start()
+
+    def _watchdog(self):
+        # If the port has been silent for 2 minutes, check it's still alive.
+        while True:
+            time.sleep(30)
+            with self._lock:
+                ser = self.ser
+            if ser is None:
+                continue
+            try:
+                if not ser.is_open:
+                    raise serial.SerialException("Port is closed")
+                # Prod the port to detect a silent disconnect (raises OSError errno 5/6 on Linux).
+                _ = ser.in_waiting
+                self._last_activity = time.time()
+            except (serial.SerialException, OSError) as e:
+                logging.warning(f"Watchdog detected serial issue: {e}. Reconnecting...")
+                self.reconnect()
 
     def set_mqtt_client(self, mqtt_client):
         self.mqtt_client = mqtt_client
 
     def read_command(self):
-        if self.ser is None:
-            logging.warning("No serial connection, cannot read command.")
+        with self._lock:
+            ser = self.ser
+        if ser is None or not ser.is_open:
             return ""
-
         try:
-            if self.ser.in_waiting > 0:
-                line = self.ser.readline().decode('utf-8').strip()
+            if ser.in_waiting > 0:
+                line = ser.readline().decode('utf-8').strip()
+                self._last_activity = time.time()
                 return line
         except (serial.SerialException, OSError) as e:
             logging.error(f"Error reading from serial: {e}")
             self.reconnect()
-
         return ""
 
     def unlock(self):
-        if self.ser is None:
+        with self._lock:
+            ser = self.ser
+        if ser is None or not ser.is_open:
             logging.warning("No serial connection, cannot send unlock command.")
             return
-
         try:
-            self.ser.write(b"unlock\n")
+            ser.write(b"unlock\n")
+            self._last_activity = time.time()
             logging.info("Sent unlock command to Arduino")
         except (serial.SerialException, OSError) as e:
             logging.error(f"Error writing to serial: {e}")
             self.reconnect()
-            try:
-                self.ser.write(b"unlock\n")
-            except Exception as e:
-                logging.error(f"Failed to send unlock command after reconnecting: {e}")
+            # Retry once after reconnect
+            with self._lock:
+                ser = self.ser
+            if ser is not None and ser.is_open:
+                try:
+                    ser.write(b"unlock\n")
+                    logging.info("Sent unlock command to Arduino after reconnect")
+                except Exception as e2:
+                    logging.error(f"Failed to send unlock command after reconnecting: {e2}")
 
     def reconnect(self):
-        """Reconnect to the Arduino in case of failure."""
+        """Close the current port cleanly then reconnect.
+        Guard ensures only one reconnect runs at a time — safe to call from
+        both the watchdog thread and the main loop simultaneously."""
+        with self._lock:
+            if self._reconnecting:
+                return  # already in progress, don't double up
+            self._reconnecting = True
+            ser = self.ser
+            self.ser = None
+            if self._disconnected_since is None:
+                self._disconnected_since = time.time()
+
         logging.info("Attempting to reconnect to Arduino...")
-        self.ser = None  # Reset the serial connection
-        self.connect()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+        try:
+            self.connect()
+        finally:
+            with self._lock:
+                self._reconnecting = False
 
     def close(self):
-        if self.ser is not None:
-            self.ser.close()
+        with self._lock:
+            ser = self.ser
+            self.ser = None
+        if ser is not None:
+            ser.close()
             logging.info("Closed serial connection to Arduino")
