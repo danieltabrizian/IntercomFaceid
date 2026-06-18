@@ -321,8 +321,8 @@ function evHtml(e) {
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
   function timingHtml(e) {
     const parts = [];
-    if (e.fast_frames)    parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
-    if (e.heavy_frames)   parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
+    if (e.detect_frames)  parts.push(`🔍 detect ${e.detect_avg_ms}ms × ${e.detect_frames}f`);
+    if (e.embed_frames)   parts.push(`🧠 embed ${e.embed_avg_ms}ms × ${e.embed_frames}f`);
     if (e.forced_processed) parts.push(`🎯 ${e.forced_processed} forced`);
     if (e.skipped_blurry)   parts.push(`🌫 ${e.skipped_blurry} skipped`);
     if (e.no_face_frames)   parts.push(`👻 ${e.no_face_frames} no-face`);
@@ -335,8 +335,7 @@ function evHtml(e) {
   if (e.type === 'recognition_started')
     detail = `<div class="ev-detail">Face recognition loop started</div>`;
   else if (e.type === 'face_recognized') {
-    const modelTag = e.model ? ` <span style="font-size:10px;color:var(--muted)">[${e.model}]</span>` : '';
-    detail = `<div class="ev-name">${e.name||''}${modelTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>${timingHtml(e)}`;
+    detail = `<div class="ev-name">${e.name||''}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>${timingHtml(e)}`;
   } else if (e.type === 'face_denied')
     detail = `<div class="ev-detail">No match${e.similarity != null ? ' — best '+Math.round(e.similarity*100)+'%' : ''}</div>${timingHtml(e)}`;
   else if (e.type === 'face_migrated')
@@ -402,21 +401,11 @@ function benchRow(label, val, highlight) {
 function renderBench(d) {
   let h = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">
     ${d.frames} frames · ${d.resolution} · ${d.faces_detected} had a real face
-    <br>embedding is forced on a synthetic crop, so totals are apples-to-apples even with no face present</div>
+    <br>embedding is forced on a synthetic crop when no face is present, so timing is consistent</div>
     <table class="bench-table">`;
-  h += benchRow('buffalo_sc detect (SCRFD)', d.buffalo_detect_ms);
-  h += benchRow('buffalo_sc embed (ArcFace)', d.buffalo_embed_ms);
-  h += benchRow('buffalo_sc TOTAL', d.buffalo_total_ms, true);
-  if (d.sface_ready) {
-    h += `<tr><td colspan="2" style="height:8px"></td></tr>`;
-    h += benchRow('SFace detect @ full-res', d.sface_detect_fullres_ms);
-    h += benchRow('SFace detect @ 320', d.sface_detect_320_ms);
-    h += benchRow('SFace embed (feature)', d.sface_feature_ms);
-    h += benchRow('SFace TOTAL @ full-res', d.sface_total_fullres_ms, true);
-    h += benchRow('SFace TOTAL @ 320', d.sface_total_320_ms, true);
-  } else {
-    h += `<tr><td colspan="2" style="color:var(--amber)">SFace not loaded</td></tr>`;
-  }
+  h += benchRow('detect (SCRFD)', d.detect_ms);
+  h += benchRow('embed (ArcFace)', d.embed_ms);
+  h += benchRow('TOTAL per frame', d.total_ms, true);
   h += '</table>';
   return h;
 }
@@ -610,10 +599,6 @@ async function loadFaces() {
           <div class="face-name">${f.name}</div>
           <div class="face-meta">
             ${f.embedding_count} sample${f.embedding_count!==1?'s':''}
-            &nbsp;·&nbsp;
-            <span style="color:${f.model==='sface'?'var(--green)':'var(--amber)'}">
-              ${f.model==='sface'?'⚡ fast':'🔵 heavy'}
-            </span>
           </div>
           <button class="btn-del">Remove</button>
         </div>

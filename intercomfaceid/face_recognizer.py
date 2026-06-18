@@ -1,5 +1,6 @@
 import numpy as np
 import insightface
+from insightface.utils import face_align
 import json
 import os
 import time
@@ -8,29 +9,28 @@ from datetime import datetime
 import logging
 import cv2
 
-SFACE_DETECTOR_PATH = '/models/yunet.onnx'
-SFACE_RECOGNIZER_PATH = '/models/sface.onnx'
-
-FAST_PHASE_SECONDS = 10
-FAST_THRESHOLD  = 0.38   # SFace cosine similarity (0–1)
-HEAVY_THRESHOLD = 0.50   # buffalo_sc cosine similarity (0–1)
-BLUR_THRESHOLD  = 80.0   # Laplacian variance on the face crop; below this = "blurry"
-FORCE_AFTER_MS  = 100    # if no frame processed in this long, process the next one
-                         # regardless of blur (failsafe — never starve recognition).
-                         # At 7 FPS (~143ms/frame) this means ~every detected face is
-                         # processed, which is intentional during calibration.
-DETECT_MAX_SIDE = 0      # 0 = disabled (detect on full-res frame). Set to e.g. 320 to
-                         # run YuNet on a downscaled copy for speed (crop still aligned
-                         # from full-res). Left OFF for now to measure raw per-model
-                         # latency; use the /api/benchmark button to compare full vs 320.
+MATCH_THRESHOLD = 0.50   # buffalo_sc cosine similarity to accept a match (0–1)
+DEDUP_THRESHOLD = 0.70   # during enrollment, skip embeddings more similar than this
+BLUR_THRESHOLD  = 80.0   # Laplacian variance on the face crop; below this = "blurry".
+                         # Gates the EXPENSIVE embedding step — detection still runs.
+FORCE_AFTER_MS  = 100    # failsafe: if no frame has been embedded in this long, embed
+                         # the next detected face regardless of blur, so recognition is
+                         # never starved. At 7 FPS this means ~every detected face is
+                         # embedded; raise it (and BLUR_THRESHOLD) once calibration data
+                         # shows where real matches cluster.
 
 
 class FaceRecognizer:
+    """buffalo_sc (InsightFace) only. Pipeline per frame:
+        detect (SCRFD, ~cheap) -> face-crop blur gate -> embed (ArcFace, expensive)
+    Detection runs on every frame; the costly embedding only runs on sharp frames.
+    SCRFD returns full-resolution landmarks, so the aligned recognition crop is taken
+    from the full-res frame (best embedding quality) while detection stays cheap."""
+
     def __init__(self, stream_manager, event_logger=None, blur_calibration=None):
         self.FACE_DATA_FILE = '/config/faces_data.json'
         self.known_face_encodings = []
         self.known_face_names = []
-        self.model_types = []   # 'sface' or 'buffalo_sc' per person
         self._lock = threading.Lock()
         self.stream_manager = stream_manager
         self.arduino = None
@@ -39,142 +39,71 @@ class FaceRecognizer:
         self.blur_calibration = blur_calibration
         self._logged_res = False
 
-        # Use all available CPU cores for OpenCV DNN (YuNet/SFace) ops.
         try:
-            cores = os.cpu_count() or 4
+            cores = os.cpu_count() or 2
             cv2.setNumThreads(cores)
             logging.info(f'OpenCV thread count set to {cores}')
         except Exception as e:
             logging.warning(f'Could not set OpenCV thread count: {e}')
 
-        logging.info('Loading buffalo_sc (heavy model)...')
-        self._heavy_model = insightface.app.FaceAnalysis(name='buffalo_sc')
-        # det_size defaults to 640x640 in insightface; we feed small frames so a
-        # 320x320 detector input is plenty and roughly halves detection cost.
-        self._heavy_model.prepare(ctx_id=0, det_size=(320, 320))
+        logging.info('Loading buffalo_sc...')
+        self._model = insightface.app.FaceAnalysis(name='buffalo_sc')
+        # det_size bounds detection cost regardless of input frame size.
+        self._model.prepare(ctx_id=0, det_size=(320, 320))
+        self._det = self._model.models['detection']
+        self._rec = self._model.models['recognition']
 
-        self._sface_ready = self._init_sface()
         self.load_face_data()
 
-    # ------------------------------------------------------------------ models
+    # ------------------------------------------------------------ detection / embedding
 
-    def _init_sface(self):
-        if not os.path.exists(SFACE_DETECTOR_PATH) or not os.path.exists(SFACE_RECOGNIZER_PATH):
-            logging.warning('SFace model files not found — fast phase disabled.')
-            return False
-        try:
-            self._yunet = cv2.FaceDetectorYN.create(
-                SFACE_DETECTOR_PATH, '', (320, 320),
-                score_threshold=0.6, nms_threshold=0.3
-            )
-            self._sface = cv2.FaceRecognizerSF.create(SFACE_RECOGNIZER_PATH, '')
-            logging.info('SFace fast model ready.')
-            return True
-        except Exception as e:
-            logging.warning(f'Failed to load SFace models: {e} — fast phase disabled.')
-            return False
-
-    def _get_sface_embedding(self, frame):
-        """Detect + blur-gate + embed in one call. Used by enrollment."""
-        if not self._sface_ready:
+    def _detect(self, frame):
+        """Run SCRFD. Returns (bbox[x1,y1,x2,y2,score], kps[5,2]) of the largest
+        face, or None. Coordinates are in full-resolution frame space."""
+        bboxes, kpss = self._det.detect(frame, max_num=0, metric='default')
+        if bboxes is None or bboxes.shape[0] == 0:
             return None
-        try:
-            faces, sharpness = self._detect_face(frame)
-            if faces is None:
-                return None
-            if sharpness < BLUR_THRESHOLD:
-                logging.debug('SFace: blurry face crop, skipping embedding')
-                return None
-            return self._sface_embed(frame, faces)
-        except Exception:
-            return None
+        areas = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
+        i = int(np.argmax(areas))
+        return bboxes[i], kpss[i]
 
-    def _sface_sim(self, e1, e2):
-        return float(self._sface.match(e1, e2, cv2.FaceRecognizerSF.FR_COSINE))
-
-    def _get_heavy_embedding(self, frame):
-        small = cv2.resize(frame, (320, 240))
-        faces = self._heavy_model.get(small)
-        if not faces:
-            return None
-        return np.array(faces[0].embedding)
-
-    def _heavy_sim(self, e1, e2):
-        return float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2)))
-
-    def _face_crop_sharpness(self, frame, face_bbox):
-        """Laplacian variance on the detected face crop. ~0.3ms.
-        Much more reliable than whole-frame on a static camera — the static
-        background dominates whole-frame variance and would mask a blurry face."""
-        x, y, bw, bh = [int(v) for v in face_bbox[:4]]
-        x, y = max(0, x), max(0, y)
-        bw = min(bw, frame.shape[1] - x)
-        bh = min(bh, frame.shape[0] - y)
-        if bw < 10 or bh < 10:
-            return 999.0  # crop too small to judge — treat as sharp
-        gray = cv2.cvtColor(frame[y:y+bh, x:x+bw], cv2.COLOR_BGR2GRAY)
+    def _crop_sharpness(self, frame, bbox):
+        """Laplacian variance of the face crop only (reliable on a static camera,
+        where a sharp background would otherwise mask a blurry face)."""
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2 = min(x2, frame.shape[1])
+        y2 = min(y2, frame.shape[0])
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return 999.0  # too small to judge — treat as sharp
+        gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-    def _detect_face(self, frame):
-        """YuNet detection on a downscaled copy (fast), with coordinates scaled
-        back to full resolution. SFace then aligns/crops from the sharp full-res
-        frame, so detection gets cheaper without hurting embedding quality.
-        Returns (faces, face_crop_sharpness) or (None, None)."""
-        h, w = frame.shape[:2]
-        scale = 1.0
-        det_frame = frame
-        longest = max(h, w)
-        if DETECT_MAX_SIDE and longest > DETECT_MAX_SIDE:
-            scale = DETECT_MAX_SIDE / longest
-            det_frame = cv2.resize(frame, (round(w * scale), round(h * scale)))
-        dh, dw = det_frame.shape[:2]
-        self._yunet.setInputSize((dw, dh))
-        _, faces = self._yunet.detect(det_frame)
-        if faces is None or len(faces) == 0:
-            return None, None
-        face = faces[0].astype('float32').copy()
-        if scale != 1.0:
-            face[:14] = face[:14] / scale   # bbox (4) + 5 landmarks (10) → full res
-        return face.reshape(1, -1), self._face_crop_sharpness(frame, face)
+    def _embed(self, frame, kps):
+        """Align the face from the full-res frame and run the ArcFace embedding."""
+        aligned = face_align.norm_crop(frame, landmark=kps, image_size=112)
+        feat = self._rec.get_feat(aligned)
+        return feat[0] if getattr(feat, 'ndim', 1) == 2 else feat
 
-    def _sface_embed(self, frame, faces):
-        aligned = self._sface.alignCrop(frame, faces[0])
-        return self._sface.feature(aligned)
+    def _sim(self, e1, e2):
+        return float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2)))
 
-    def _match_sface(self, embedding):
+    # kept for any external callers
+    def cosine_similarity(self, e1, e2):
+        return self._sim(e1, e2)
+
+    def _match(self, embedding):
         with self._lock:
-            idxs = [i for i, m in enumerate(self.model_types) if m == 'sface']
-            if not idxs:
-                return None
-            names = [self.known_face_names[i] for i in idxs]
-            encodings = [self.known_face_encodings[i] for i in idxs]
-        best_score, best_name = 0.0, None
-        for name, embs in zip(names, encodings):
-            score = max(self._sface_sim(embedding, e) for e in embs)
-            if score > best_score:
-                best_score, best_name = score, name
-        if best_score >= FAST_THRESHOLD:
-            return {'name': best_name, 'similarity': best_score, 'model': 'sface', 'migrate': False}
-        return None
-
-    def _match_heavy(self, embedding):
-        with self._lock:
-            idxs = [i for i, m in enumerate(self.model_types) if m == 'buffalo_sc']
-            if not idxs:
-                return None
-            names = [self.known_face_names[i] for i in idxs]
-            encodings = [self.known_face_encodings[i] for i in idxs]
-        sims = [max(self._heavy_sim(embedding, e) for e in embs) for embs in encodings]
+            names = list(self.known_face_names)
+            encodings = list(self.known_face_encodings)
+        if not names:
+            return None
+        sims = [max(self._sim(embedding, e) for e in embs) for embs in encodings]
         best_idx = int(np.argmax(sims))
         best_score = float(sims[best_idx])
-        if best_score >= HEAVY_THRESHOLD:
-            return {'name': names[best_idx], 'similarity': best_score,
-                    'model': 'buffalo_sc', 'migrate': True}
+        if best_score >= MATCH_THRESHOLD:
+            return {'name': names[best_idx], 'similarity': best_score}
         return None
-
-    # used externally by old callers (learn_new_face dedup check)
-    def cosine_similarity(self, e1, e2):
-        return self._heavy_sim(e1, e2)
 
     # ---------------------------------------------------------------- storage
 
@@ -183,7 +112,6 @@ class FaceRecognizer:
             data = {
                 'names': list(self.known_face_names),
                 'encodings': [[e.tolist() for e in embs] for embs in self.known_face_encodings],
-                'model_types': list(self.model_types),
             }
         with open(self.FACE_DATA_FILE, 'w') as f:
             json.dump(data, f)
@@ -196,18 +124,31 @@ class FaceRecognizer:
             return
         with open(self.FACE_DATA_FILE, 'r') as f:
             data = json.load(f)
+
+        names = data.get('names', [])
+        encodings = [[np.array(e) for e in embs] for embs in data.get('encodings', [])]
+        # Legacy files may carry per-person model_types. Any 'sface' entries hold
+        # embeddings in SFace's vector space, which is incompatible with buffalo_sc —
+        # drop them (they'd need re-enrollment) so they can't corrupt matching.
+        model_types = data.get('model_types')
+        dropped = 0
+        if model_types:
+            keep_n, keep_e = [], []
+            for n, e, t in zip(names, encodings, model_types):
+                if t == 'sface':
+                    dropped += 1
+                    continue
+                keep_n.append(n)
+                keep_e.append(e)
+            names, encodings = keep_n, keep_e
+
         with self._lock:
-            self.known_face_names = data.get('names', [])
-            self.known_face_encodings = [
-                [np.array(e) for e in embs] for embs in data.get('encodings', [])
-            ]
-            # Existing entries without model_types default to buffalo_sc
-            self.model_types = data.get(
-                'model_types', ['buffalo_sc'] * len(self.known_face_names)
-            )
-        sface_count = self.model_types.count('sface')
-        heavy_count = self.model_types.count('buffalo_sc')
-        logging.info(f'Loaded {len(self.known_face_names)} faces: {sface_count} sface, {heavy_count} buffalo_sc')
+            self.known_face_names = names
+            self.known_face_encodings = encodings
+        logging.info(f'Loaded {len(names)} faces' +
+                     (f' (dropped {dropped} incompatible SFace entries — re-enroll them)' if dropped else ''))
+        if dropped:
+            self.save_face_data()  # rewrite without model_types / sface entries
 
     # ------------------------------------------------------------ wiring
 
@@ -253,32 +194,30 @@ class FaceRecognizer:
             self._logged_res = True
 
         with self._lock:
-            n_sface = self.model_types.count('sface')
-            n_heavy = self.model_types.count('buffalo_sc')
+            have_faces = len(self.known_face_names) > 0
+        if not have_faces:
+            logging.warning('No faces enrolled — nothing to recognize.')
+            if self.event_logger is not None:
+                self.event_logger.log('face_denied', similarity=None, snapshot=snapshot_filename)
+            return
 
         start_time = time.time()
-        frame_buffer = [frame]
         fps_counter = 0
         fps_timer = time.time()
-        fast_ms, fast_frames = 0.0, 0
-        heavy_ms, heavy_frames = 0.0, 0
-        # Blur-gate instrumentation
-        samples = []            # (sharpness, matched) for processed frames
-        forced_processed = 0    # below threshold but processed anyway (failsafe)
-        auto_processed = 0      # at/above threshold
+        detect_ms, detect_frames = 0.0, 0
+        embed_ms, embed_frames = 0.0, 0
+        samples = []            # (sharpness, matched) for embedded frames
+        forced_processed = 0    # embedded despite being below blur threshold (failsafe)
+        auto_processed = 0      # embedded because at/above threshold
         skipped_blurry = 0      # below threshold AND failsafe didn't fire
-        no_face_frames = 0      # frames where YuNet found no face
-        last_processed = start_time
+        no_face_frames = 0      # frames where SCRFD found no face
+        last_embedded = start_time
         match = None
 
         while time.time() - start_time < capture_time:
             ret, frame = self.stream_manager.get_frame()
             if not ret:
                 continue
-
-            frame_buffer.append(frame)
-            if len(frame_buffer) > 80:
-                frame_buffer.pop(0)
 
             fps_counter += 1
             now = time.time()
@@ -287,75 +226,40 @@ class FaceRecognizer:
                 fps_counter = 0
                 fps_timer = now
 
-            elapsed = now - start_time
-            # Fast phase only applies if there are migrated SFace faces to compare against.
-            in_fast = self._sface_ready and n_sface > 0 and elapsed < FAST_PHASE_SECONDS
-            # Heavy runs whenever fast isn't running and there are buffalo_sc faces —
-            # crucially including from t=0 when no SFace faces exist yet, otherwise the
-            # first FAST_PHASE_SECONDS would be wasted idling.
-            in_heavy = (not in_fast) and n_heavy > 0
-
-            if not in_fast and not in_heavy:
-                # Nothing can match in the current phase. If nothing will ever match
-                # (no heavy faces, and fast window is over or there are no sface faces),
-                # stop early instead of spinning the rest of the window.
-                if n_heavy == 0 and (n_sface == 0 or elapsed >= FAST_PHASE_SECONDS):
-                    break
-                continue
-
-            # If SFace models aren't available we can't run the YuNet-based blur gate;
-            # fall back to ungated heavy recognition.
-            if not self._sface_ready:
-                try:
-                    t0 = time.time()
-                    emb = self._get_heavy_embedding(frame)
-                    match = self._match_heavy(emb) if emb is not None else None
-                    heavy_ms += (time.time() - t0) * 1000
-                    heavy_frames += 1
-                except Exception as e:
-                    logging.error(f'Recognition error: {e}')
-                    continue
-                if match:
-                    break
-                continue
-
-            # --- Shared detection + blur gate ---
+            # --- Detection (cheap, every frame) ---
             try:
-                t_detect = time.time()
-                faces, sharpness = self._detect_face(frame)
-                detect_ms = (time.time() - t_detect) * 1000
+                t0 = time.time()
+                det = self._detect(frame)
+                detect_ms += (time.time() - t0) * 1000
+                detect_frames += 1
             except Exception as e:
                 logging.error(f'Detection error: {e}')
                 continue
-            if faces is None:
+            if det is None:
                 no_face_frames += 1
-                continue  # no face in frame
+                continue
+            bbox, kps = det
+            sharpness = self._crop_sharpness(frame, bbox)
 
-            is_blurry = sharpness < BLUR_THRESHOLD
+            # --- Blur gate (decides whether to pay for the embedding) ---
             forced = False
-            if is_blurry:
-                if (now - last_processed) * 1000 >= FORCE_AFTER_MS:
+            if sharpness < BLUR_THRESHOLD:
+                if (now - last_embedded) * 1000 >= FORCE_AFTER_MS:
                     forced = True   # failsafe: don't starve recognition
                 else:
                     skipped_blurry += 1
                     continue
 
-            # --- Process the frame ---
-            last_processed = now
+            # --- Embedding (expensive, sharp frames only) ---
+            last_embedded = now
             try:
                 t0 = time.time()
-                if in_fast:
-                    emb = self._sface_embed(frame, faces)
-                    match = self._match_sface(emb) if emb is not None else None
-                    fast_ms += (time.time() - t0) * 1000 + detect_ms
-                    fast_frames += 1
-                else:
-                    emb = self._get_heavy_embedding(frame)
-                    match = self._match_heavy(emb) if emb is not None else None
-                    heavy_ms += (time.time() - t0) * 1000 + detect_ms
-                    heavy_frames += 1
+                emb = self._embed(frame, kps)
+                embed_ms += (time.time() - t0) * 1000
+                embed_frames += 1
+                match = self._match(emb)
             except Exception as e:
-                logging.error(f'Recognition error: {e}')
+                logging.error(f'Embedding error: {e}')
                 continue
 
             samples.append((sharpness, bool(match)))
@@ -369,10 +273,10 @@ class FaceRecognizer:
 
         duration_s = round(time.time() - start_time, 1)
         timing = {
-            'fast_avg_ms':  round(fast_ms  / fast_frames,  1) if fast_frames  else None,
-            'fast_frames':  fast_frames,
-            'heavy_avg_ms': round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
-            'heavy_frames': heavy_frames,
+            'detect_avg_ms': round(detect_ms / detect_frames, 1) if detect_frames else None,
+            'detect_frames': detect_frames,
+            'embed_avg_ms':  round(embed_ms / embed_frames, 1) if embed_frames else None,
+            'embed_frames':  embed_frames,
             'forced_processed': forced_processed,
             'auto_processed': auto_processed,
             'skipped_blurry': skipped_blurry,
@@ -380,7 +284,6 @@ class FaceRecognizer:
             'duration_s':   duration_s,
         }
 
-        # Persist calibration data (sharpness -> match outcome histogram)
         if self.blur_calibration is not None:
             try:
                 self.blur_calibration.record_batch(
@@ -389,34 +292,23 @@ class FaceRecognizer:
             except Exception as e:
                 logging.error(f'Failed to record blur calibration: {e}')
 
+        summary = (f'detect {timing["detect_avg_ms"]}ms×{detect_frames}f  '
+                   f'embed {timing["embed_avg_ms"]}ms×{embed_frames}f  '
+                   f'(forced {forced_processed}, auto {auto_processed}, '
+                   f'skipped {skipped_blurry}, no_face {no_face_frames})')
+
         if match:
-            logging.info(
-                f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
-                f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
-                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
-                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry}, no_face {no_face_frames})'
-            )
+            logging.info(f'Recognized {match["name"]} {match["similarity"]*100:.1f}% — {summary}')
             if self.event_logger is not None:
                 self.event_logger.log('face_recognized',
                                       name=match['name'],
                                       similarity=round(match['similarity'], 4),
-                                      model=match['model'],
+                                      model='buffalo_sc',
                                       snapshot=snapshot_filename,
                                       **timing)
             self._unlock_and_publish(match['name'])
-            if match.get('migrate'):
-                threading.Thread(
-                    target=self._migrate_to_sface,
-                    args=(match['name'], list(frame_buffer)),
-                    daemon=True
-                ).start()
         else:
-            logging.warning(
-                f'No face matched — '
-                f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
-                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
-                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry}, no_face {no_face_frames})'
-            )
+            logging.warning(f'No face matched — {summary}')
             if self.event_logger is not None:
                 self.event_logger.log('face_denied',
                                       similarity=None,
@@ -426,10 +318,9 @@ class FaceRecognizer:
     # ---------------------------------------------------------- benchmark
 
     def benchmark(self, iterations=20):
-        """Measure raw per-model latency on live frames, as if a face were present.
-        No blur gate, no early-out. Synthesizes a centered 112x112 crop for the
-        SFace feature pass when no face is detected, so timing reflects the full
-        pipeline regardless of who's in frame. Returns averages in ms."""
+        """Measure raw per-stage latency on live frames, as if a face were present.
+        Detection runs on each frame; the embedding is forced on a synthetic crop
+        when no real face is detected, so timing reflects the full pipeline."""
         if not self.stream_manager.is_capturing:
             self.stream_manager.start_video_stream()
 
@@ -449,126 +340,41 @@ class FaceRecognizer:
         def avg(lst):
             return round(sum(lst) / len(lst), 1) if lst else None
 
-        # buffalo_sc internal submodels — so we can time detection and embedding
-        # SEPARATELY and force the embedding even with no face in frame (fair vs SFace).
-        det_model = getattr(self._heavy_model, 'models', {}).get('detection')
-        rec_model = getattr(self._heavy_model, 'models', {}).get('recognition')
-
-        buf_det, buf_emb = [], []
-        det_full, det_small, feat = [], [], []
+        det_times, emb_times = [], []
         faces_detected = 0
 
         for f in frames:
             fh, fw = f.shape[:2]
-            s = min(fh, fw)
-            cy, cx = fh // 2, fw // 2
-            center_crop = f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2]
-            crop112 = cv2.resize(center_crop, (112, 112))
-
-            # buffalo detection (SCRFD, det_size-bounded) on full-res input
-            if det_model is not None:
-                try:
-                    t = time.time()
-                    det_model.detect(f)
-                    buf_det.append((time.time() - t) * 1000)
-                except Exception as e:
-                    logging.debug(f'bench buffalo detect: {e}')
-            # buffalo embedding forced on a synthetic 112 crop (onnxruntime)
-            if rec_model is not None:
-                try:
-                    t = time.time()
-                    rec_model.get_feat([crop112])
-                    buf_emb.append((time.time() - t) * 1000)
-                except Exception as e:
-                    logging.debug(f'bench buffalo embed: {e}')
-
-            if not self._sface_ready:
-                continue
-
-            # YuNet detection at full resolution
             t = time.time()
-            self._yunet.setInputSize((fw, fh))
-            _, faces = self._yunet.detect(f)
-            det_full.append((time.time() - t) * 1000)
-            has_face = faces is not None and len(faces) > 0
-            if has_face:
+            det = self._detect(f)
+            det_times.append((time.time() - t) * 1000)
+
+            if det is not None:
                 faces_detected += 1
-
-            # YuNet detection at 320 long side
-            scale = 320.0 / max(fh, fw)
-            small = cv2.resize(f, (round(fw * scale), round(fh * scale)))
-            t = time.time()
-            self._yunet.setInputSize((small.shape[1], small.shape[0]))
-            self._yunet.detect(small)
-            det_small.append((time.time() - t) * 1000)
-
-            # SFace feature extraction (align real face if present, else center crop)
-            t = time.time()
-            if has_face:
-                aligned = self._sface.alignCrop(f, faces[0])
+                _, kps = det
+                t = time.time()
+                self._embed(f, kps)
+                emb_times.append((time.time() - t) * 1000)
             else:
-                aligned = crop112
-            self._sface.feature(aligned)
-            feat.append((time.time() - t) * 1000)
+                # force embedding on a centered crop so we still time it
+                s = min(fh, fw)
+                cy, cx = fh // 2, fw // 2
+                crop = cv2.resize(f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2], (112, 112))
+                t = time.time()
+                self._rec.get_feat(crop)
+                emb_times.append((time.time() - t) * 1000)
 
-        bd, be = avg(buf_det), avg(buf_emb)
+        d, e = avg(det_times), avg(emb_times)
         result = {
             'frames': len(frames),
             'resolution': f'{w}x{h}',
             'faces_detected': faces_detected,
-            'buffalo_detect_ms': bd,
-            'buffalo_embed_ms': be,
-            'buffalo_total_ms': round((bd or 0) + (be or 0), 1),
-            'sface_ready': self._sface_ready,
+            'detect_ms': d,
+            'embed_ms': e,
+            'total_ms': round((d or 0) + (e or 0), 1),
         }
-        if self._sface_ready:
-            df, ds, ft = avg(det_full), avg(det_small), avg(feat)
-            result.update({
-                'sface_detect_fullres_ms': df,
-                'sface_detect_320_ms': ds,
-                'sface_feature_ms': ft,
-                'sface_total_fullres_ms': round((df or 0) + (ft or 0), 1),
-                'sface_total_320_ms': round((ds or 0) + (ft or 0), 1),
-            })
         logging.info(f'Benchmark: {result}')
         return result
-
-    # ---------------------------------------------------------- migration
-
-    def _migrate_to_sface(self, name, frames):
-        if not self._sface_ready:
-            logging.warning(f'SFace not ready, skipping migration for {name}')
-            return
-
-        logging.info(f'Migrating {name} → SFace using {len(frames)} buffered frames...')
-        new_embeddings = []
-        for frame in frames:
-            emb = self._get_sface_embedding(frame)
-            if emb is None:
-                continue
-            # 0.50 threshold: keep embedding if it differs meaningfully from all stored ones.
-            # SFace same-face similarity is typically 0.80-0.95, so 0.50 keeps diverse samples
-            # without letting in faces from different people (recognition threshold is 0.38).
-            if any(self._sface_sim(emb, e) > 0.50 for e in new_embeddings):
-                continue
-            new_embeddings.append(emb)
-        logging.info(f'Migration extracted {len(new_embeddings)} unique SFace embeddings for {name}')
-
-        if not new_embeddings:
-            logging.warning(f'Migration failed for {name}: SFace found no face in buffered frames')
-            return
-
-        with self._lock:
-            if name not in self.known_face_names:
-                return
-            idx = self.known_face_names.index(name)
-            self.known_face_encodings[idx] = new_embeddings
-            self.model_types[idx] = 'sface'
-
-        self.save_face_data()
-        if self.event_logger is not None:
-            self.event_logger.log('face_migrated', name=name, embeddings=len(new_embeddings))
-        logging.info(f'Migrated {name} → SFace ({len(new_embeddings)} embeddings)')
 
     # ------------------------------------------------------- enrollment
 
@@ -576,9 +382,7 @@ class FaceRecognizer:
         if person_name is None:
             person_name = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
-        use_sface = self._sface_ready
-        model_label = 'sface' if use_sface else 'buffalo_sc'
-        logging.info(f'Learning {person_name} with {model_label}...')
+        logging.info(f'Learning {person_name}...')
 
         if not self.stream_manager.is_capturing:
             if not self.stream_manager.start_video_stream():
@@ -595,43 +399,37 @@ class FaceRecognizer:
                 time.sleep(0.1)
                 continue
             try:
-                embedding = self._get_sface_embedding(frame) if use_sface else self._get_heavy_embedding(frame)
-                if embedding is None:
+                det = self._detect(frame)
+                if det is None:
                     continue
+                bbox, kps = det
+                if self._crop_sharpness(frame, bbox) < BLUR_THRESHOLD:
+                    continue  # don't enroll blurry frames
+                embedding = self._embed(frame, kps)
 
                 if not face_snapshot_saved and self.event_logger is not None:
                     self.event_logger.save_face_snapshot(frame, person_name)
                     face_snapshot_saved = True
 
                 with self._lock:
-                    all_encodings = list(self.known_face_encodings)
-                    all_types = list(self.model_types)
-                    all_names = list(self.known_face_names)
+                    known = list(self.known_face_encodings)
+                    known_names = list(self.known_face_names)
 
-                # For heavy model keep buffalo_sc threshold (0.7); for sface use 0.50
-                dedup_thresh = 0.50 if use_sface else 0.7
-
+                # Skip if this already matches an enrolled person
                 is_known = False
-                for embs, mtype, mname in zip(all_encodings, all_types, all_names):
-                    if mtype != model_label:
-                        continue
-                    for e in embs:
-                        sim = self._sface_sim(embedding, e) if use_sface else self._heavy_sim(embedding, e)
-                        if sim > dedup_thresh:
-                            logging.info(f'Matches existing {mname}, skipping frame.')
-                            is_known = True
-                            break
-                    if is_known:
+                for embs, mname in zip(known, known_names):
+                    if any(self._sim(embedding, e) > DEDUP_THRESHOLD for e in embs):
+                        logging.info(f'Matches existing {mname}, skipping frame.')
+                        is_known = True
                         break
+                if is_known:
+                    continue
 
-                if not is_known:
-                    too_similar = any(
-                        (self._sface_sim(embedding, e) if use_sface else self._heavy_sim(embedding, e)) > dedup_thresh
-                        for e in session_embeddings
-                    )
-                    if not too_similar:
-                        session_embeddings.append(embedding)
-                        logging.info(f'Embedding #{len(session_embeddings)} for {person_name}')
+                # Skip near-duplicates within this session
+                if any(self._sim(embedding, e) > DEDUP_THRESHOLD for e in session_embeddings):
+                    continue
+                session_embeddings.append(embedding)
+                logging.info(f'Embedding #{len(session_embeddings)} for {person_name}')
             except Exception as e:
                 logging.error(f'Error in learn_new_face: {e}')
 
@@ -639,8 +437,7 @@ class FaceRecognizer:
             if session_embeddings:
                 self.known_face_encodings.append(session_embeddings)
                 self.known_face_names.append(person_name)
-                self.model_types.append(model_label)
-                logging.info(f'Enrolled {person_name} ({model_label}, {len(session_embeddings)} embeddings)')
+                logging.info(f'Enrolled {person_name} ({len(session_embeddings)} embeddings)')
             else:
                 logging.warning(f'No embeddings collected for {person_name}')
 
@@ -654,15 +451,13 @@ class FaceRecognizer:
         with self._lock:
             names = list(self.known_face_names)
             encodings = list(self.known_face_encodings)
-            types = list(self.model_types)
         return [
             {
                 'name': n,
                 'embedding_count': len(e),
-                'model': t,
                 'has_snapshot': self.event_logger.face_snapshot_exists(n) if self.event_logger else False,
             }
-            for n, e, t in zip(names, encodings, types)
+            for n, e in zip(names, encodings)
         ]
 
     def delete_face(self, name):
@@ -672,7 +467,6 @@ class FaceRecognizer:
             idx = self.known_face_names.index(name)
             self.known_face_names.pop(idx)
             self.known_face_encodings.pop(idx)
-            self.model_types.pop(idx)
         self.save_face_data()
         if self.event_logger is not None:
             snap = os.path.join(self.event_logger.face_snapshots_dir, f'{name}.jpg')

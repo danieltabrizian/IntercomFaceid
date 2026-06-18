@@ -19,13 +19,6 @@ RUN pip install --upgrade pip
 
 RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial fastapi "uvicorn[standard]"
 
-# Download SFace models (YuNet detector + SFace recognizer)
-RUN mkdir -p /models && \
-    wget -q -O /models/yunet.onnx \
-      "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" && \
-    wget -q -O /models/sface.onnx \
-      "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
-
 WORKDIR /usr/src/app
 COPY . .
 
