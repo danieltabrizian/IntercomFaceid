@@ -449,19 +449,42 @@ class FaceRecognizer:
         def avg(lst):
             return round(sum(lst) / len(lst), 1) if lst else None
 
-        buffalo, det_full, det_small, feat = [], [], [], []
+        # buffalo_sc internal submodels — so we can time detection and embedding
+        # SEPARATELY and force the embedding even with no face in frame (fair vs SFace).
+        det_model = getattr(self._heavy_model, 'models', {}).get('detection')
+        rec_model = getattr(self._heavy_model, 'models', {}).get('recognition')
+
+        buf_det, buf_emb = [], []
+        det_full, det_small, feat = [], [], []
         faces_detected = 0
 
         for f in frames:
-            # buffalo_sc full pipeline (own detection on a 320x240 resize)
-            t = time.time()
-            self._heavy_model.get(cv2.resize(f, (320, 240)))
-            buffalo.append((time.time() - t) * 1000)
+            fh, fw = f.shape[:2]
+            s = min(fh, fw)
+            cy, cx = fh // 2, fw // 2
+            center_crop = f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2]
+            crop112 = cv2.resize(center_crop, (112, 112))
+
+            # buffalo detection (SCRFD, det_size-bounded) on full-res input
+            if det_model is not None:
+                try:
+                    t = time.time()
+                    det_model.detect(f)
+                    buf_det.append((time.time() - t) * 1000)
+                except Exception as e:
+                    logging.debug(f'bench buffalo detect: {e}')
+            # buffalo embedding forced on a synthetic 112 crop (onnxruntime)
+            if rec_model is not None:
+                try:
+                    t = time.time()
+                    rec_model.get_feat([crop112])
+                    buf_emb.append((time.time() - t) * 1000)
+                except Exception as e:
+                    logging.debug(f'bench buffalo embed: {e}')
 
             if not self._sface_ready:
                 continue
 
-            fh, fw = f.shape[:2]
             # YuNet detection at full resolution
             t = time.time()
             self._yunet.setInputSize((fw, fh))
@@ -484,18 +507,18 @@ class FaceRecognizer:
             if has_face:
                 aligned = self._sface.alignCrop(f, faces[0])
             else:
-                s = min(fh, fw)
-                cy, cx = fh // 2, fw // 2
-                crop = f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2]
-                aligned = cv2.resize(crop, (112, 112))
+                aligned = crop112
             self._sface.feature(aligned)
             feat.append((time.time() - t) * 1000)
 
+        bd, be = avg(buf_det), avg(buf_emb)
         result = {
             'frames': len(frames),
             'resolution': f'{w}x{h}',
             'faces_detected': faces_detected,
-            'buffalo_ms': avg(buffalo),
+            'buffalo_detect_ms': bd,
+            'buffalo_embed_ms': be,
+            'buffalo_total_ms': round((bd or 0) + (be or 0), 1),
             'sface_ready': self._sface_ready,
         }
         if self._sface_ready:

@@ -401,15 +401,19 @@ function benchRow(label, val, highlight) {
 
 function renderBench(d) {
   let h = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">
-    ${d.frames} frames · ${d.resolution} · ${d.faces_detected} had a real face</div>
+    ${d.frames} frames · ${d.resolution} · ${d.faces_detected} had a real face
+    <br>embedding is forced on a synthetic crop, so totals are apples-to-apples even with no face present</div>
     <table class="bench-table">`;
-  h += benchRow('buffalo_sc (full pipeline)', d.buffalo_ms);
+  h += benchRow('buffalo_sc detect (SCRFD)', d.buffalo_detect_ms);
+  h += benchRow('buffalo_sc embed (ArcFace)', d.buffalo_embed_ms);
+  h += benchRow('buffalo_sc TOTAL', d.buffalo_total_ms, true);
   if (d.sface_ready) {
+    h += `<tr><td colspan="2" style="height:8px"></td></tr>`;
     h += benchRow('SFace detect @ full-res', d.sface_detect_fullres_ms);
     h += benchRow('SFace detect @ 320', d.sface_detect_320_ms);
-    h += benchRow('SFace feature (embed)', d.sface_feature_ms);
-    h += benchRow('SFace total @ full-res', d.sface_total_fullres_ms, true);
-    h += benchRow('SFace total @ 320 (downscaled)', d.sface_total_320_ms, true);
+    h += benchRow('SFace embed (feature)', d.sface_feature_ms);
+    h += benchRow('SFace TOTAL @ full-res', d.sface_total_fullres_ms, true);
+    h += benchRow('SFace TOTAL @ 320', d.sface_total_320_ms, true);
   } else {
     h += `<tr><td colspan="2" style="color:var(--amber)">SFace not loaded</td></tr>`;
   }
