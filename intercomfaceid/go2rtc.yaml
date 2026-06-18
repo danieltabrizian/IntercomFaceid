@@ -1,0 +1,30 @@
+# go2rtc config — bundled camera restreamer inside the Face ID add-on.
+#
+# Ports are container-internal defaults; the add-on maps them to non-default HOST
+# ports (see config.yaml) so they don't collide with Home Assistant's own bundled
+# go2rtc (which runs on the host on 1984/8554/8555).
+#
+# STAGE A: source is motionEye's MJPEG stream (no USB contention, no downtime).
+#   -> proves the H264/RTSP/WebRTC/HLS pipeline while motionEye still owns the cam.
+# STAGE B (later): switch `webcam` to the USB device and retire motionEye:
+#   webcam: ffmpeg:device?video=/dev/video0&input_format=mjpeg&video_size=640x480&framerate=15
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"
+
+webrtc:
+  listen: ":8555"
+  candidates:
+    - 192.168.2.45:18555   # host-mapped WebRTC port (see config.yaml ports)
+
+ffmpeg:
+  bin: ffmpeg
+
+streams:
+  webcam: ffmpeg:http://192.168.2.45:9081
+
+log:
+  level: info

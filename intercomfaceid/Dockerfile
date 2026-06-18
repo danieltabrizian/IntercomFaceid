@@ -21,6 +21,13 @@ RUN pip install --upgrade pip
 
 RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial fastapi "uvicorn[standard]"
 
+# ffmpeg + go2rtc for the bundled camera restreamer (USB -> RTSP/WebRTC/HLS/MJPEG).
+RUN apt-get update && apt-get install -y ffmpeg wget && apt-get clean
+RUN wget -q -O /usr/local/bin/go2rtc \
+      https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_amd64 \
+    && chmod +x /usr/local/bin/go2rtc \
+    && /usr/local/bin/go2rtc --version
+
 WORKDIR /usr/src/app
 COPY . .
 
