@@ -66,10 +66,9 @@ def main():
     mqtt_client = None
 
     if enable_face_recognition:
-        # Read frames from the bundled go2rtc (MJPEG passthrough of the USB cam),
-        # not motionEye. go2rtc runs in this same container.
-        stream_manager = StreamManager("http://127.0.0.1:1984/api/stream.mjpeg?src=webcam",
-                                       autostart=False)
+        # Read frames from motionEye (reliable USB capture). go2rtc transcodes the
+        # same motionEye feed to H264 for the browser/HomeKit live view.
+        stream_manager = StreamManager("http://homeassistant.local:9081", autostart=False)
         face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
                                          blur_calibration=blur_calibration)
     if enable_arduino:
