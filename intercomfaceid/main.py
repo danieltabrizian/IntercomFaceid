@@ -1,6 +1,7 @@
 from stream_manager import StreamManager
 from face_recognizer import FaceRecognizer
 from event_logger import EventLogger
+from blur_calibration import BlurCalibration
 import web_server
 import mqtt_handler
 import arduino_handler
@@ -16,6 +17,7 @@ def main():
     enable_arduino = True
 
     event_logger = EventLogger(data_dir='/data')
+    blur_calibration = BlurCalibration(path='/data/blur_calibration.json')
 
     face_recognizer = None
     arduino = None
@@ -23,7 +25,8 @@ def main():
 
     if enable_face_recognition:
         stream_manager = StreamManager("http://homeassistant.local:9081")
-        face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger)
+        face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
+                                         blur_calibration=blur_calibration)
     if enable_arduino:
         arduino = arduino_handler.ArduinoHandler(event_logger=event_logger)
     if enable_mqtt:
@@ -38,7 +41,8 @@ def main():
         mqtt_client.set_face_recognizer(face_recognizer)
         mqtt_client.set_arduino(arduino)
 
-    web_server.start_in_thread(event_logger, face_recognizer, port=8099)
+    web_server.start_in_thread(event_logger, face_recognizer, port=8099,
+                               blur_calibration=blur_calibration)
 
     while True:
         if enable_mqtt:

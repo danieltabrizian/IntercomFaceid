@@ -11,6 +11,7 @@ app = FastAPI()
 
 _event_logger = None
 _face_recognizer = None
+_blur_calibration = None
 
 SNAPSHOTS_DIR = '/data/snapshots'
 FACE_SNAPSHOTS_DIR = '/data/face_snapshots'
@@ -219,6 +220,14 @@ nav button:hover:not(.active) { color: var(--text); }
     <h3>Activity heatmap — day × hour</h3>
     <div class="hm-wrap"><div class="heatmap" id="heatmap"></div></div>
   </div>
+
+  <div class="section-title" style="margin-top:24px">Blur calibration</div>
+  <div class="stats" id="calib-stats"></div>
+  <div class="chart-card heatmap-card">
+    <h3>Face-crop sharpness — processed vs. matched</h3>
+    <canvas id="calibChart"></canvas>
+    <div id="calib-note" style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6"></div>
+  </div>
 </div>
 
 <div id="faces" class="tab">
@@ -296,9 +305,11 @@ function evHtml(e) {
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
   function timingHtml(e) {
     const parts = [];
-    if (e.fast_frames)  parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
-    if (e.heavy_frames) parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
-    if (e.duration_s)   parts.push(`${e.duration_s}s`);
+    if (e.fast_frames)    parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
+    if (e.heavy_frames)   parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
+    if (e.forced_processed) parts.push(`🎯 ${e.forced_processed} forced`);
+    if (e.skipped_blurry)   parts.push(`🌫 ${e.skipped_blurry} skipped`);
+    if (e.duration_s)     parts.push(`${e.duration_s}s`);
     return parts.length
       ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${parts.join(' &nbsp;·&nbsp; ')}</div>`
       : '';
@@ -340,6 +351,56 @@ async function loadAnalytics() {
     renderStats();
     renderCmdBar();
     updateCharts();
+  } catch(err) { console.error(err); }
+  loadCalibration();
+}
+
+let calibChart = null;
+async function loadCalibration() {
+  try {
+    const r = await fetch('api/calibration');
+    const c = await r.json();
+    const hist = c.histogram || [];
+    const bw = c.bin_width || 20;
+
+    document.getElementById('calib-stats').innerHTML = `
+      <div class="stat"><div class="val">${c.total_processed||0}</div><div class="lbl">Frames Processed</div></div>
+      <div class="stat"><div class="val">${c.total_matched||0}</div><div class="lbl">Matched</div></div>
+      <div class="stat"><div class="val">${c.forced_pct||0}%</div><div class="lbl">Forced (failsafe)</div></div>
+      <div class="stat"><div class="val">${c.skipped_blurry||0}</div><div class="lbl">Skipped Blurry</div></div>
+    `;
+
+    const labels = hist.map(h => `${h.floor}-${h.floor+bw}`);
+    if (calibChart) calibChart.destroy();
+    calibChart = new Chart(document.getElementById('calibChart'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Processed', data: hist.map(h=>h.n),       backgroundColor: '#475569', borderRadius: 3 },
+          { label: 'Matched',   data: hist.map(h=>h.matched), backgroundColor: '#10b981', borderRadius: 3 },
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: true, labels: { color: '#94a3b8', boxWidth: 12 } } },
+        scales: {
+          x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', maxRotation: 90, minRotation: 45 } },
+          y: { grid: { color: '#1e293b' }, ticks: { color: '#64748b' }, beginAtZero: true }
+        }
+      }
+    });
+
+    const safe = c.suggested_threshold_safe;
+    const p5 = c.suggested_threshold_p5;
+    document.getElementById('calib-note').innerHTML = `
+      Current threshold: <b style="color:var(--text)">${c.current_blur_threshold ?? '—'}</b>
+      &nbsp;·&nbsp; force-after: <b style="color:var(--text)">${c.current_force_after_ms ?? '—'}ms</b><br>
+      Lowest sharpness that has ever matched: <b style="color:var(--green)">${safe != null ? safe : 'no data yet'}</b>
+      ${p5 != null ? `&nbsp;·&nbsp; 5th-percentile of matches: <b style="color:var(--green)">${p5}</b>` : ''}
+      <br><span style="color:var(--muted)">Once green bars cluster clearly above a value, set BLUR_THRESHOLD just below it
+      and raise force-after so the gate can actually skip.</span>
+    `;
   } catch(err) { console.error(err); }
 }
 
@@ -589,6 +650,13 @@ async def delete_face(name: str):
     return {'success': success}
 
 
+@app.get("/api/calibration")
+async def get_calibration():
+    if _blur_calibration is None:
+        return {}
+    return _blur_calibration.summary()
+
+
 @app.get("/snapshots/{filename}")
 async def get_snapshot(filename: str):
     path = os.path.join(SNAPSHOTS_DIR, os.path.basename(filename))
@@ -605,15 +673,18 @@ async def get_face_snapshot(filename: str):
     return JSONResponse({'error': 'not found'}, status_code=404)
 
 
-def start(event_logger, face_recognizer, port=8099):
-    global _event_logger, _face_recognizer
+def start(event_logger, face_recognizer, port=8099, blur_calibration=None):
+    global _event_logger, _face_recognizer, _blur_calibration
     _event_logger = event_logger
     _face_recognizer = face_recognizer
+    _blur_calibration = blur_calibration
     logging.info(f"Starting web server on port {port}")
     uvicorn.run(app, host='0.0.0.0', port=port, log_level='warning')
 
 
-def start_in_thread(event_logger, face_recognizer, port=8099):
-    t = threading.Thread(target=start, args=(event_logger, face_recognizer, port), daemon=True)
+def start_in_thread(event_logger, face_recognizer, port=8099, blur_calibration=None):
+    t = threading.Thread(target=start,
+                         args=(event_logger, face_recognizer, port, blur_calibration),
+                         daemon=True)
     t.start()
     return t

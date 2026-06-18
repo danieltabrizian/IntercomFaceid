@@ -14,11 +14,19 @@ SFACE_RECOGNIZER_PATH = '/models/sface.onnx'
 FAST_PHASE_SECONDS = 10
 FAST_THRESHOLD  = 0.38   # SFace cosine similarity (0–1)
 HEAVY_THRESHOLD = 0.50   # buffalo_sc cosine similarity (0–1)
-BLUR_THRESHOLD  = 80.0   # Laplacian variance; below this → skip frame as too blurry
+BLUR_THRESHOLD  = 80.0   # Laplacian variance on the face crop; below this = "blurry"
+FORCE_AFTER_MS  = 100    # if no frame processed in this long, process the next one
+                         # regardless of blur (failsafe — never starve recognition).
+                         # At 7 FPS (~143ms/frame) this means ~every detected face is
+                         # processed, which is intentional during calibration.
+DETECT_MAX_SIDE = 320    # YuNet runs on a copy downscaled to this longest side.
+                         # Detection cost scales with pixel count; the source is 640x480
+                         # so this ~quarters detection time. The SFace crop is still
+                         # aligned from the full-res frame, so embedding quality is kept.
 
 
 class FaceRecognizer:
-    def __init__(self, stream_manager, event_logger=None):
+    def __init__(self, stream_manager, event_logger=None, blur_calibration=None):
         self.FACE_DATA_FILE = '/config/faces_data.json'
         self.known_face_encodings = []
         self.known_face_names = []
@@ -28,10 +36,22 @@ class FaceRecognizer:
         self.arduino = None
         self.mqtt_client = None
         self.event_logger = event_logger
+        self.blur_calibration = blur_calibration
+        self._logged_res = False
+
+        # Use all available CPU cores for OpenCV DNN (YuNet/SFace) ops.
+        try:
+            cores = os.cpu_count() or 4
+            cv2.setNumThreads(cores)
+            logging.info(f'OpenCV thread count set to {cores}')
+        except Exception as e:
+            logging.warning(f'Could not set OpenCV thread count: {e}')
 
         logging.info('Loading buffalo_sc (heavy model)...')
         self._heavy_model = insightface.app.FaceAnalysis(name='buffalo_sc')
-        self._heavy_model.prepare(ctx_id=0)
+        # det_size defaults to 640x640 in insightface; we feed small frames so a
+        # 320x320 detector input is plenty and roughly halves detection cost.
+        self._heavy_model.prepare(ctx_id=0, det_size=(320, 320))
 
         self._sface_ready = self._init_sface()
         self.load_face_data()
@@ -55,22 +75,17 @@ class FaceRecognizer:
             return False
 
     def _get_sface_embedding(self, frame):
+        """Detect + blur-gate + embed in one call. Used by enrollment."""
         if not self._sface_ready:
             return None
         try:
-            h, w = frame.shape[:2]
-            self._yunet.setInputSize((w, h))
-            _, faces = self._yunet.detect(frame)
-            if faces is None or len(faces) == 0:
+            faces, sharpness = self._detect_face(frame)
+            if faces is None:
                 return None
-            # Blur check on the face crop only — free since detection already ran.
-            # Whole-frame Laplacian is unreliable on static cameras (sharp background
-            # dominates the variance and masks a blurry face).
-            if self._face_crop_sharpness(frame, faces[0]) < BLUR_THRESHOLD:
+            if sharpness < BLUR_THRESHOLD:
                 logging.debug('SFace: blurry face crop, skipping embedding')
                 return None
-            aligned = self._sface.alignCrop(frame, faces[0])
-            return self._sface.feature(aligned)
+            return self._sface_embed(frame, faces)
         except Exception:
             return None
 
@@ -99,6 +114,63 @@ class FaceRecognizer:
             return 999.0  # crop too small to judge — treat as sharp
         gray = cv2.cvtColor(frame[y:y+bh, x:x+bw], cv2.COLOR_BGR2GRAY)
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    def _detect_face(self, frame):
+        """YuNet detection on a downscaled copy (fast), with coordinates scaled
+        back to full resolution. SFace then aligns/crops from the sharp full-res
+        frame, so detection gets cheaper without hurting embedding quality.
+        Returns (faces, face_crop_sharpness) or (None, None)."""
+        h, w = frame.shape[:2]
+        scale = 1.0
+        det_frame = frame
+        longest = max(h, w)
+        if DETECT_MAX_SIDE and longest > DETECT_MAX_SIDE:
+            scale = DETECT_MAX_SIDE / longest
+            det_frame = cv2.resize(frame, (round(w * scale), round(h * scale)))
+        dh, dw = det_frame.shape[:2]
+        self._yunet.setInputSize((dw, dh))
+        _, faces = self._yunet.detect(det_frame)
+        if faces is None or len(faces) == 0:
+            return None, None
+        face = faces[0].astype('float32').copy()
+        if scale != 1.0:
+            face[:14] = face[:14] / scale   # bbox (4) + 5 landmarks (10) → full res
+        return face.reshape(1, -1), self._face_crop_sharpness(frame, face)
+
+    def _sface_embed(self, frame, faces):
+        aligned = self._sface.alignCrop(frame, faces[0])
+        return self._sface.feature(aligned)
+
+    def _match_sface(self, embedding):
+        with self._lock:
+            idxs = [i for i, m in enumerate(self.model_types) if m == 'sface']
+            if not idxs:
+                return None
+            names = [self.known_face_names[i] for i in idxs]
+            encodings = [self.known_face_encodings[i] for i in idxs]
+        best_score, best_name = 0.0, None
+        for name, embs in zip(names, encodings):
+            score = max(self._sface_sim(embedding, e) for e in embs)
+            if score > best_score:
+                best_score, best_name = score, name
+        if best_score >= FAST_THRESHOLD:
+            return {'name': best_name, 'similarity': best_score, 'model': 'sface', 'migrate': False}
+        return None
+
+    def _match_heavy(self, embedding):
+        with self._lock:
+            idxs = [i for i, m in enumerate(self.model_types) if m == 'buffalo_sc']
+            if not idxs:
+                return None
+            names = [self.known_face_names[i] for i in idxs]
+            encodings = [self.known_face_encodings[i] for i in idxs]
+        sims = [max(self._heavy_sim(embedding, e) for e in embs) for embs in encodings]
+        best_idx = int(np.argmax(sims))
+        best_score = float(sims[best_idx])
+        if best_score >= HEAVY_THRESHOLD:
+            return {'name': names[best_idx], 'similarity': best_score,
+                    'model': 'buffalo_sc', 'migrate': True}
+        return None
 
     # used externally by old callers (learn_new_face dedup check)
     def cosine_similarity(self, e1, e2):
@@ -176,12 +248,26 @@ class FaceRecognizer:
         if self.event_logger is not None:
             self.event_logger.log('recognition_started')
 
+        if not self._logged_res:
+            logging.info(f'Source frame resolution: {frame.shape[1]}x{frame.shape[0]}')
+            self._logged_res = True
+
+        with self._lock:
+            n_sface = self.model_types.count('sface')
+            n_heavy = self.model_types.count('buffalo_sc')
+
         start_time = time.time()
         frame_buffer = [frame]
         fps_counter = 0
         fps_timer = time.time()
         fast_ms, fast_frames = 0.0, 0
         heavy_ms, heavy_frames = 0.0, 0
+        # Blur-gate instrumentation
+        samples = []            # (sharpness, matched) for processed frames
+        forced_processed = 0    # below threshold but processed anyway (failsafe)
+        auto_processed = 0      # at/above threshold
+        skipped_blurry = 0      # below threshold AND failsafe didn't fire
+        last_processed = start_time
         match = None
 
         while time.time() - start_time < capture_time:
@@ -201,19 +287,75 @@ class FaceRecognizer:
                 fps_timer = now
 
             elapsed = now - start_time
+            in_fast = elapsed < FAST_PHASE_SECONDS and self._sface_ready and n_sface > 0
+            in_heavy = elapsed >= FAST_PHASE_SECONDS and n_heavy > 0
+
+            # If the heavy phase has nothing to compare against (everyone migrated),
+            # there's no point spinning the rest of the window.
+            if elapsed >= FAST_PHASE_SECONDS and n_heavy == 0:
+                break
+            if not in_fast and not in_heavy:
+                continue
+
+            # If SFace models aren't available we can't run the YuNet-based blur gate;
+            # fall back to ungated heavy recognition.
+            if not self._sface_ready:
+                try:
+                    t0 = time.time()
+                    emb = self._get_heavy_embedding(frame)
+                    match = self._match_heavy(emb) if emb is not None else None
+                    heavy_ms += (time.time() - t0) * 1000
+                    heavy_frames += 1
+                except Exception as e:
+                    logging.error(f'Recognition error: {e}')
+                    continue
+                if match:
+                    break
+                continue
+
+            # --- Shared detection + blur gate ---
+            try:
+                t_detect = time.time()
+                faces, sharpness = self._detect_face(frame)
+                detect_ms = (time.time() - t_detect) * 1000
+            except Exception as e:
+                logging.error(f'Detection error: {e}')
+                continue
+            if faces is None:
+                continue  # no face in frame
+
+            is_blurry = sharpness < BLUR_THRESHOLD
+            forced = False
+            if is_blurry:
+                if (now - last_processed) * 1000 >= FORCE_AFTER_MS:
+                    forced = True   # failsafe: don't starve recognition
+                else:
+                    skipped_blurry += 1
+                    continue
+
+            # --- Process the frame ---
+            last_processed = now
             try:
                 t0 = time.time()
-                if elapsed < FAST_PHASE_SECONDS and self._sface_ready:
-                    match = self._try_fast(frame)
-                    fast_ms += (time.time() - t0) * 1000
+                if in_fast:
+                    emb = self._sface_embed(frame, faces)
+                    match = self._match_sface(emb) if emb is not None else None
+                    fast_ms += (time.time() - t0) * 1000 + detect_ms
                     fast_frames += 1
-                elif elapsed >= FAST_PHASE_SECONDS:
-                    match = self._try_heavy(frame, list(frame_buffer))
-                    heavy_ms += (time.time() - t0) * 1000
+                else:
+                    emb = self._get_heavy_embedding(frame)
+                    match = self._match_heavy(emb) if emb is not None else None
+                    heavy_ms += (time.time() - t0) * 1000 + detect_ms
                     heavy_frames += 1
             except Exception as e:
                 logging.error(f'Recognition error: {e}')
                 continue
+
+            samples.append((sharpness, bool(match)))
+            if forced:
+                forced_processed += 1
+            else:
+                auto_processed += 1
 
             if match:
                 break
@@ -224,14 +366,27 @@ class FaceRecognizer:
             'fast_frames':  fast_frames,
             'heavy_avg_ms': round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
             'heavy_frames': heavy_frames,
+            'forced_processed': forced_processed,
+            'auto_processed': auto_processed,
+            'skipped_blurry': skipped_blurry,
             'duration_s':   duration_s,
         }
+
+        # Persist calibration data (sharpness -> match outcome histogram)
+        if self.blur_calibration is not None:
+            try:
+                self.blur_calibration.record_batch(
+                    samples, forced_processed, auto_processed, skipped_blurry,
+                    blur_threshold=BLUR_THRESHOLD, force_after_ms=FORCE_AFTER_MS)
+            except Exception as e:
+                logging.error(f'Failed to record blur calibration: {e}')
 
         if match:
             logging.info(
                 f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
                 f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
-                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f'
+                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
+                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry})'
             )
             if self.event_logger is not None:
                 self.event_logger.log('face_recognized',
@@ -251,73 +406,14 @@ class FaceRecognizer:
             logging.warning(
                 f'No face matched — '
                 f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
-                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f'
+                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
+                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry})'
             )
             if self.event_logger is not None:
                 self.event_logger.log('face_denied',
                                       similarity=None,
                                       snapshot=snapshot_filename,
                                       **timing)
-
-    def _try_fast(self, frame):
-        """Returns match dict or None. No side effects."""
-        with self._lock:
-            fast_idx = [i for i, m in enumerate(self.model_types) if m == 'sface']
-            if not fast_idx:
-                return None
-            names = [self.known_face_names[i] for i in fast_idx]
-            encodings = [self.known_face_encodings[i] for i in fast_idx]
-
-        embedding = self._get_sface_embedding(frame)
-        if embedding is None:
-            return None
-
-        best_score, best_name = 0.0, None
-        for name, embs in zip(names, encodings):
-            score = max(self._sface_sim(embedding, e) for e in embs)
-            if score > best_score:
-                best_score, best_name = score, name
-
-        if best_score >= FAST_THRESHOLD:
-            return {'name': best_name, 'similarity': best_score, 'model': 'sface', 'migrate': False}
-        return None
-
-    def _try_heavy(self, frame, frames_buffer):
-        """Returns match dict (with migrate=True) or None. No side effects."""
-        with self._lock:
-            heavy_idx = [i for i, m in enumerate(self.model_types) if m == 'buffalo_sc']
-            if not heavy_idx:
-                return None
-            names = [self.known_face_names[i] for i in heavy_idx]
-            encodings = [self.known_face_encodings[i] for i in heavy_idx]
-
-        # Use YuNet for a cheap face-crop blur check before the expensive buffalo_sc call.
-        # ~5ms to potentially skip 129ms.
-        if self._sface_ready:
-            h, w = frame.shape[:2]
-            self._yunet.setInputSize((w, h))
-            _, faces = self._yunet.detect(frame)
-            if faces is None or len(faces) == 0:
-                return None
-            if self._face_crop_sharpness(frame, faces[0]) < BLUR_THRESHOLD:
-                logging.debug('Heavy: blurry face crop, skipping embedding')
-                return None
-
-        embedding = self._get_heavy_embedding(frame)
-        if embedding is None:
-            return None
-
-        similarities = [
-            max(self._heavy_sim(embedding, e) for e in embs)
-            for embs in encodings
-        ]
-        best_idx = int(np.argmax(similarities))
-        best_score = float(similarities[best_idx])
-
-        if best_score >= HEAVY_THRESHOLD:
-            return {'name': names[best_idx], 'similarity': best_score,
-                    'model': 'buffalo_sc', 'migrate': True}
-        return None
 
     # ---------------------------------------------------------- migration
 
