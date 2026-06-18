@@ -63,6 +63,12 @@ class FaceRecognizer:
             _, faces = self._yunet.detect(frame)
             if faces is None or len(faces) == 0:
                 return None
+            # Blur check on the face crop only — free since detection already ran.
+            # Whole-frame Laplacian is unreliable on static cameras (sharp background
+            # dominates the variance and masks a blurry face).
+            if self._face_crop_sharpness(frame, faces[0]) < BLUR_THRESHOLD:
+                logging.debug('SFace: blurry face crop, skipping embedding')
+                return None
             aligned = self._sface.alignCrop(frame, faces[0])
             return self._sface.feature(aligned)
         except Exception:
@@ -81,11 +87,18 @@ class FaceRecognizer:
     def _heavy_sim(self, e1, e2):
         return float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2)))
 
-    def _frame_sharpness(self, frame):
-        """Laplacian variance on a 160×120 grayscale thumbnail. ~0.5ms."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        small = cv2.resize(gray, (160, 120))
-        return float(cv2.Laplacian(small, cv2.CV_64F).var())
+    def _face_crop_sharpness(self, frame, face_bbox):
+        """Laplacian variance on the detected face crop. ~0.3ms.
+        Much more reliable than whole-frame on a static camera — the static
+        background dominates whole-frame variance and would mask a blurry face."""
+        x, y, bw, bh = [int(v) for v in face_bbox[:4]]
+        x, y = max(0, x), max(0, y)
+        bw = min(bw, frame.shape[1] - x)
+        bh = min(bh, frame.shape[0] - y)
+        if bw < 10 or bh < 10:
+            return 999.0  # crop too small to judge — treat as sharp
+        gray = cv2.cvtColor(frame[y:y+bh, x:x+bw], cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     # used externally by old callers (learn_new_face dedup check)
     def cosine_similarity(self, e1, e2):
@@ -169,7 +182,6 @@ class FaceRecognizer:
         fps_timer = time.time()
         fast_ms, fast_frames = 0.0, 0
         heavy_ms, heavy_frames = 0.0, 0
-        blurry_skipped = 0
         match = None
 
         while time.time() - start_time < capture_time:
@@ -177,7 +189,6 @@ class FaceRecognizer:
             if not ret:
                 continue
 
-            # Always buffer frames (even blurry ones are useful for migration)
             frame_buffer.append(frame)
             if len(frame_buffer) > 80:
                 frame_buffer.pop(0)
@@ -190,25 +201,13 @@ class FaceRecognizer:
                 fps_timer = now
 
             elapsed = now - start_time
-            in_fast_phase = elapsed < FAST_PHASE_SECONDS and self._sface_ready
-            in_heavy_phase = elapsed >= FAST_PHASE_SECONDS
-            if not in_fast_phase and not in_heavy_phase:
-                continue
-
-            # Sharpness gate — skip blurry frames before expensive embedding
-            sharpness = self._frame_sharpness(frame)
-            if sharpness < BLUR_THRESHOLD:
-                blurry_skipped += 1
-                logging.debug(f'Blurry frame skipped (sharpness={sharpness:.1f})')
-                continue
-
             try:
                 t0 = time.time()
-                if in_fast_phase:
+                if elapsed < FAST_PHASE_SECONDS and self._sface_ready:
                     match = self._try_fast(frame)
                     fast_ms += (time.time() - t0) * 1000
                     fast_frames += 1
-                else:
+                elif elapsed >= FAST_PHASE_SECONDS:
                     match = self._try_heavy(frame, list(frame_buffer))
                     heavy_ms += (time.time() - t0) * 1000
                     heavy_frames += 1
@@ -221,12 +220,11 @@ class FaceRecognizer:
 
         duration_s = round(time.time() - start_time, 1)
         timing = {
-            'fast_avg_ms':    round(fast_ms  / fast_frames,  1) if fast_frames  else None,
-            'fast_frames':    fast_frames,
-            'heavy_avg_ms':   round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
-            'heavy_frames':   heavy_frames,
-            'blurry_skipped': blurry_skipped,
-            'duration_s':     duration_s,
+            'fast_avg_ms':  round(fast_ms  / fast_frames,  1) if fast_frames  else None,
+            'fast_frames':  fast_frames,
+            'heavy_avg_ms': round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
+            'heavy_frames': heavy_frames,
+            'duration_s':   duration_s,
         }
 
         if match:
@@ -292,6 +290,18 @@ class FaceRecognizer:
                 return None
             names = [self.known_face_names[i] for i in heavy_idx]
             encodings = [self.known_face_encodings[i] for i in heavy_idx]
+
+        # Use YuNet for a cheap face-crop blur check before the expensive buffalo_sc call.
+        # ~5ms to potentially skip 129ms.
+        if self._sface_ready:
+            h, w = frame.shape[:2]
+            self._yunet.setInputSize((w, h))
+            _, faces = self._yunet.detect(frame)
+            if faces is None or len(faces) == 0:
+                return None
+            if self._face_crop_sharpness(frame, faces[0]) < BLUR_THRESHOLD:
+                logging.debug('Heavy: blurry face crop, skipping embedding')
+                return None
 
         embedding = self._get_heavy_embedding(frame)
         if embedding is None:
