@@ -85,6 +85,17 @@ class FaceRecognizer:
         feat = self._rec.get_feat(aligned)
         return feat[0] if getattr(feat, 'ndim', 1) == 2 else feat
 
+    def _face_crop_img(self, frame, bbox, pad=0.35):
+        """A padded square-ish face crop for the gallery thumbnails."""
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        bw, bh = x2 - x1, y2 - y1
+        px, py = int(bw * pad), int(bh * pad)
+        x1 = max(0, x1 - px); y1 = max(0, y1 - py)
+        x2 = min(frame.shape[1], x2 + px); y2 = min(frame.shape[0], y2 + py)
+        if x2 - x1 < 5 or y2 - y1 < 5:
+            return None
+        return frame[y1:y2, x1:x2].copy()
+
     def _sim(self, e1, e2):
         return float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2)))
 
@@ -269,6 +280,14 @@ class FaceRecognizer:
                 auto_processed += 1
 
             if match:
+                # Auto-refresh the person's gallery with this fresh face crop.
+                if self.event_logger is not None and sharpness >= BLUR_THRESHOLD:
+                    try:
+                        crop = self._face_crop_img(frame, bbox)
+                        if crop is not None:
+                            self.event_logger.add_face_image(crop, match['name'])
+                    except Exception as e:
+                        logging.debug(f'gallery update failed: {e}')
                 break
 
         duration_s = round(time.time() - start_time, 1)
@@ -391,7 +410,6 @@ class FaceRecognizer:
 
         start_time = time.time()
         session_embeddings = []
-        face_snapshot_saved = False
 
         while time.time() - start_time < 5:
             ret, frame = self.stream_manager.get_frame()
@@ -406,10 +424,6 @@ class FaceRecognizer:
                 if self._crop_sharpness(frame, bbox) < BLUR_THRESHOLD:
                     continue  # don't enroll blurry frames
                 embedding = self._embed(frame, kps)
-
-                if not face_snapshot_saved and self.event_logger is not None:
-                    self.event_logger.save_face_snapshot(frame, person_name)
-                    face_snapshot_saved = True
 
                 with self._lock:
                     known = list(self.known_face_encodings)
@@ -430,6 +444,12 @@ class FaceRecognizer:
                     continue
                 session_embeddings.append(embedding)
                 logging.info(f'Embedding #{len(session_embeddings)} for {person_name}')
+
+                # Seed the gallery with a crop from each accepted (diverse) frame
+                if self.event_logger is not None:
+                    crop = self._face_crop_img(frame, bbox)
+                    if crop is not None:
+                        self.event_logger.add_face_image(crop, person_name)
             except Exception as e:
                 logging.error(f'Error in learn_new_face: {e}')
 
@@ -451,14 +471,36 @@ class FaceRecognizer:
         with self._lock:
             names = list(self.known_face_names)
             encodings = list(self.known_face_encodings)
-        return [
-            {
+        result = []
+        for n, e in zip(names, encodings):
+            images = self.event_logger.face_images(n) if self.event_logger else []
+            result.append({
                 'name': n,
                 'embedding_count': len(e),
-                'has_snapshot': self.event_logger.face_snapshot_exists(n) if self.event_logger else False,
-            }
-            for n, e in zip(names, encodings)
-        ]
+                'images': images,
+                'has_snapshot': len(images) > 0,
+            })
+        return result
+
+    def rename_face(self, old, new):
+        new = (new or '').strip()
+        if not new:
+            return {'success': False, 'error': 'Name cannot be empty'}
+        with self._lock:
+            if old not in self.known_face_names:
+                return {'success': False, 'error': 'Person not found'}
+            if new != old and new in self.known_face_names:
+                return {'success': False, 'error': 'A person with that name already exists'}
+            idx = self.known_face_names.index(old)
+            self.known_face_names[idx] = new
+        if self.event_logger is not None:
+            try:
+                self.event_logger.rename_face_images(old, new)
+            except Exception as e:
+                logging.error(f'Failed to rename face images: {e}')
+        self.save_face_data()
+        logging.info(f'Renamed face: {old} -> {new}')
+        return {'success': True}
 
     def delete_face(self, name):
         with self._lock:
@@ -469,8 +511,6 @@ class FaceRecognizer:
             self.known_face_encodings.pop(idx)
         self.save_face_data()
         if self.event_logger is not None:
-            snap = os.path.join(self.event_logger.face_snapshots_dir, f'{name}.jpg')
-            if os.path.exists(snap):
-                os.remove(snap)
+            self.event_logger.delete_face_images(name)
         logging.info(f'Deleted face: {name}')
         return True

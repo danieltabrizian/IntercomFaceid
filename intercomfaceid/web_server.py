@@ -3,7 +3,7 @@ import threading
 import logging
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import uvicorn
 
@@ -157,18 +157,27 @@ nav button:hover:not(.active) { color: var(--text); }
 .face-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
 }
+.face-photo-wrap { position: relative; }
 .face-photo, .face-ph {
   width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--surface2);
 }
 .face-ph { display: flex; align-items: center; justify-content: center; font-size: 60px; }
+.img-count {
+  position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.65);
+  color: #fff; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 100px;
+}
 .face-body { padding: 12px; }
-.face-name { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+.face-name { font-weight: 600; font-size: 14px; margin-bottom: 2px; cursor: pointer; }
+.face-name:hover { color: var(--accent); }
 .face-meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-.btn-del {
-  width: 100%; background: #2d0c0c; color: var(--red); border: 1px solid #5c1111;
-  border-radius: 6px; padding: 7px; cursor: pointer; font-size: 12px; font-weight: 600;
+.face-actions { display: flex; gap: 6px; }
+.btn-rename, .btn-del {
+  flex: 1; border-radius: 6px; padding: 7px; cursor: pointer; font-size: 12px; font-weight: 600;
   transition: background .15s;
 }
+.btn-rename { background: #0c1f2d; color: var(--accent); border: 1px solid #1d4a5c; }
+.btn-rename:hover { background: #11455c; }
+.btn-del { background: #2d0c0c; color: var(--red); border: 1px solid #5c1111; }
 .btn-del:hover { background: #5c1111; }
 .bench-btn {
   background: #172554; color: var(--accent); border: 1px solid var(--accent);
@@ -590,24 +599,46 @@ async function loadFaces() {
     el.innerHTML = faces.map(f => {
       const safeId = CSS.escape(f.name);
       const safeName = f.name.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      const imgs = (f.images || []).map(p => 'face-snapshots/' + p.split('/').map(encodeURIComponent).join('/'));
+      const imgsAttr = imgs.join('|').replace(/"/g,'&quot;');
+      const photo = imgs.length
+        ? `<img class="face-photo" src="${imgs[0]}" onerror="this.nextElementSibling.style.display='flex';this.style.display='none'" /><div class="face-ph" style="display:none">👤</div>`
+        : `<div class="face-ph">👤</div>`;
+      const count = imgs.length > 1 ? `<span class="img-count">${imgs.length} 📸</span>` : '';
       return `
-      <div class="face-card" id="fc-${safeId}" data-name="${safeName}">
-        ${f.has_snapshot
-          ? `<img class="face-photo" src="face-snapshots/${encodeURIComponent(f.name)}.jpg" onerror="this.nextElementSibling.style.display='flex';this.style.display='none'" /><div class="face-ph" style="display:none">👤</div>`
-          : `<div class="face-ph">👤</div>`}
+      <div class="face-card" id="fc-${safeId}" data-name="${safeName}" data-images="${imgsAttr}">
+        <div class="face-photo-wrap">${photo}${count}</div>
         <div class="face-body">
-          <div class="face-name">${f.name}</div>
-          <div class="face-meta">
-            ${f.embedding_count} sample${f.embedding_count!==1?'s':''}
+          <div class="face-name" title="Click to rename">${f.name}</div>
+          <div class="face-meta">${f.embedding_count} sample${f.embedding_count!==1?'s':''}</div>
+          <div class="face-actions">
+            <button class="btn-rename">Rename</button>
+            <button class="btn-del">Remove</button>
           </div>
-          <button class="btn-del">Remove</button>
         </div>
       </div>`;
     }).join('');
-    // Attach remove handlers after render — avoids onclick quoting issues
-    el.querySelectorAll('.btn-del').forEach(btn => {
-      const name = btn.closest('[data-name]').dataset.name;
-      btn.addEventListener('click', () => delFace(name));
+
+    el.querySelectorAll('.face-card').forEach(card => {
+      const name = card.dataset.name;
+      const imgs = (card.dataset.images || '').split('|').filter(Boolean);
+      const img = card.querySelector('.face-photo');
+
+      // Cycle through gallery images on hover
+      if (img && imgs.length > 1) {
+        let i = 0, timer = null;
+        card.addEventListener('mouseenter', () => {
+          timer = setInterval(() => { i = (i + 1) % imgs.length; img.src = imgs[i]; }, 700);
+        });
+        card.addEventListener('mouseleave', () => {
+          if (timer) clearInterval(timer);
+          timer = null; i = 0; img.src = imgs[0];
+        });
+      }
+
+      card.querySelector('.btn-del').addEventListener('click', () => delFace(name));
+      card.querySelector('.btn-rename').addEventListener('click', () => renameFace(name));
+      card.querySelector('.face-name').addEventListener('click', () => renameFace(name));
     });
   } catch(err) { console.error(err); }
 }
@@ -617,6 +648,21 @@ async function delFace(name) {
   const r = await fetch('api/faces/' + encodeURIComponent(name) + '/delete', {method:'POST'});
   const d = await r.json();
   if (d.success) document.getElementById('fc-' + CSS.escape(name))?.remove();
+}
+
+async function renameFace(name) {
+  const next = prompt('Rename "' + name + '" to:', name);
+  if (next == null) return;
+  const newName = next.trim();
+  if (!newName || newName === name) return;
+  const r = await fetch('api/faces/' + encodeURIComponent(name) + '/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_name: newName })
+  });
+  const d = await r.json();
+  if (d.success) loadFaces();
+  else alert('Rename failed: ' + (d.error || 'unknown error'));
 }
 
 document.getElementById('bench-btn').addEventListener('click', runBenchmark);
@@ -703,6 +749,13 @@ async def delete_face(name: str):
     return {'success': success}
 
 
+@app.post("/api/faces/{name}/rename")
+async def rename_face(name: str, body: dict = Body(...)):
+    if _face_recognizer is None:
+        return JSONResponse({'success': False, 'error': 'no recognizer'})
+    return _face_recognizer.rename_face(name, (body or {}).get('new_name', ''))
+
+
 @app.get("/api/calibration")
 async def get_calibration():
     if _blur_calibration is None:
@@ -727,10 +780,14 @@ async def get_snapshot(filename: str):
     return JSONResponse({'error': 'not found'}, status_code=404)
 
 
-@app.get("/face-snapshots/{filename}")
-async def get_face_snapshot(filename: str):
-    path = os.path.join(FACE_SNAPSHOTS_DIR, os.path.basename(filename))
-    if os.path.exists(path):
+@app.get("/face-snapshots/{subpath:path}")
+async def get_face_snapshot(subpath: str):
+    # Allow nested per-person paths (name/file.jpg) but block traversal.
+    safe = os.path.normpath(subpath).lstrip('/')
+    if safe.startswith('..') or os.path.isabs(safe) or '..' in safe.split(os.sep):
+        return JSONResponse({'error': 'bad path'}, status_code=400)
+    path = os.path.join(FACE_SNAPSHOTS_DIR, safe)
+    if os.path.isfile(path):
         return FileResponse(path, media_type='image/jpeg')
     return JSONResponse({'error': 'not found'}, status_code=404)
 
