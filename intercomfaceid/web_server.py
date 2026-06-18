@@ -338,19 +338,25 @@ function renderCmdBar() {
   const d = analyticsData;
   const bar = document.getElementById('cmd-bar');
   const allTotal = d.total_serial_commands || 0;
-  let html = `<button class="cmd-pill ${selectedCmd==='__all__'?'active':''}" onclick="selectCmd('__all__')">
+  let html = `<button class="cmd-pill ${selectedCmd==='__all__'?'active':''}" data-cmd="__all__">
     <span>All codes</span><span class="cmd-count">${allTotal}</span>
   </button>`;
   (d.command_list || []).forEach((c, i) => {
     const color = PILL_COLORS[i % PILL_COLORS.length];
     const active = selectedCmd === c.command;
-    html += `<button class="cmd-pill ${active?'active':''}" onclick="selectCmd(${JSON.stringify(c.command)})"
+    // Store command in data-cmd to avoid HTML attribute quoting issues
+    const safeCmd = c.command.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    html += `<button class="cmd-pill ${active?'active':''}" data-cmd="${safeCmd}"
       style="${active ? '' : `--pill-color:${color}`}">
       <span style="color:${active?'inherit':color}">${c.command}</span>
       <span class="cmd-count">${c.total}</span>
     </button>`;
   });
   bar.innerHTML = html;
+  // Attach handlers after rendering — avoids all inline onclick quoting pitfalls
+  bar.querySelectorAll('[data-cmd]').forEach(btn => {
+    btn.addEventListener('click', () => selectCmd(btn.dataset.cmd));
+  });
 }
 
 function selectCmd(cmd) {

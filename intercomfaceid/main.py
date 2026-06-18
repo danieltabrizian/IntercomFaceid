@@ -46,7 +46,11 @@ def main():
 
         if enable_arduino:
             command = arduino.read_command()
-            if command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F"):
+            # Trigger face capture on any intercom signal:
+            # - "call:XXXXXX" format from TCS bus
+            # - "Received HEX: XXXXXX" format from Arduino sketch
+            is_bell = command.startswith("call:") or command.startswith("Received HEX:")
+            if is_bell:
                 logging.info(f"Received call command: {command}")
                 if enable_mqtt:
                     try:
