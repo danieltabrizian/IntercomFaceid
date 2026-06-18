@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: Face ID for Intercom
-version: "3.6.0"
+version: "3.7.0"
 slug: faceid_intercom
 description: FaceId for Intercom
 url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
@@ -21,6 +21,7 @@ memory: "512M"
 devices:
   - /dev/ttyUSB0:/dev/ttyUSB0
   - /dev/video0:/dev/video0
+  - /dev/dri/renderD128:/dev/dri/renderD128   # iGPU for VAAPI H264 encode
 ports:
   "1984/tcp": 11984   # go2rtc web UI / API
   "8554/tcp": 18654   # go2rtc RTSP (H264) -> HA camera (18554 = HA's own go2rtc)

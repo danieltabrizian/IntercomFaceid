@@ -30,7 +30,7 @@ streams:
   #          only running when an H264 consumer is connected (on-demand).
   webcam:
     - ffmpeg:device?video=/dev/video0&input_format=mjpeg&video_size=640x480&framerate=15
-    - ffmpeg:webcam#video=h264
+    - ffmpeg:webcam#video=h264#hardware=vaapi
 
 log:
   level: info
