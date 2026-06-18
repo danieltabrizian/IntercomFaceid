@@ -105,7 +105,12 @@ class ArduinoHandler:
                 line = ser.readline().decode('utf-8').strip()
                 self._last_activity = time.time()
                 if line and self.event_logger is not None:
-                    self.event_logger.log('serial_command', command=line)
+                    if line.lower() == 'unlock':
+                        self.event_logger.log('door_unlocked')
+                    elif line.startswith('Received HEX:'):
+                        self.event_logger.log('hex_received', command=line)
+                    else:
+                        self.event_logger.log('serial_command', command=line)
                 return line
         except (serial.SerialException, OSError) as e:
             logging.error(f"Error reading from serial: {e}")

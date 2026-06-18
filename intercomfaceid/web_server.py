@@ -271,17 +271,20 @@ function fmt(iso) {
 }
 
 const BADGE = {
-  bell_ring:            ['b-bell',  '🔔 Bell Ring'],
+  bell_ring:            ['b-bell',  '🔔 Bell'],
+  hex_received:         ['b-bell',  '📶 Signal'],
   face_recognized:      ['b-ok',    '✅ Recognised'],
   face_denied:          ['b-denied','🚫 Denied'],
   face_migrated:        ['b-mig',   '⚡ Migrated'],
+  door_unlocked:        ['b-ok',    '🔓 Unlocked'],
   serial_command:       ['b-raw',   '📡 Serial'],
   arduino_connected:    ['b-ard',   '🔌 Connected'],
   arduino_disconnected: ['b-ard',   '⚠️ Disconnected'],
 };
 const ICON = {
-  bell_ring: '🔔', face_recognized: '👤', face_denied: '❓',
-  face_migrated: '⚡', serial_command: '📡', arduino_connected: '🔌', arduino_disconnected: '⚠️'
+  bell_ring: '🔔', hex_received: '📶', face_recognized: '👤', face_denied: '❓',
+  face_migrated: '⚡', door_unlocked: '🔓', serial_command: '📡',
+  arduino_connected: '🔌', arduino_disconnected: '⚠️'
 };
 
 function evHtml(e) {
@@ -297,6 +300,10 @@ function evHtml(e) {
     detail = `<div class="ev-detail">Best similarity: ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}</div>`;
   else if (e.type === 'face_migrated')
     detail = `<div class="ev-detail">${e.name||''} → SFace (${e.embeddings||0} embeddings)</div>`;
+  else if (e.type === 'hex_received')
+    detail = `<div class="ev-detail">${e.command||''}</div>`;
+  else if (e.type === 'door_unlocked')
+    detail = `<div class="ev-detail">Door opened</div>`;
   else if (e.type === 'serial_command')
     detail = `<div class="ev-detail">${e.command||''}</div>`;
   else if (e.message)
@@ -451,8 +458,11 @@ async function loadFaces() {
     const faces = await r.json();
     const el = document.getElementById('faces-grid');
     if (!faces.length) { el.innerHTML = '<div class="empty">No faces enrolled.</div>'; return; }
-    el.innerHTML = faces.map(f => `
-      <div class="face-card" id="fc-${CSS.escape(f.name)}">
+    el.innerHTML = faces.map(f => {
+      const safeId = CSS.escape(f.name);
+      const safeName = f.name.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      return `
+      <div class="face-card" id="fc-${safeId}" data-name="${safeName}">
         ${f.has_snapshot
           ? `<img class="face-photo" src="face-snapshots/${encodeURIComponent(f.name)}.jpg" onerror="this.nextElementSibling.style.display='flex';this.style.display='none'" /><div class="face-ph" style="display:none">👤</div>`
           : `<div class="face-ph">👤</div>`}
@@ -465,9 +475,15 @@ async function loadFaces() {
               ${f.model==='sface'?'⚡ fast':'🔵 heavy'}
             </span>
           </div>
-          <button class="btn-del" onclick="delFace(${JSON.stringify(f.name)})">Remove</button>
+          <button class="btn-del">Remove</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
+    // Attach remove handlers after render — avoids onclick quoting issues
+    el.querySelectorAll('.btn-del').forEach(btn => {
+      const name = btn.closest('[data-name]').dataset.name;
+      btn.addEventListener('click', () => delFace(name));
+    });
   } catch(err) { console.error(err); }
 }
 

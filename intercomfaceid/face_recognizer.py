@@ -166,7 +166,7 @@ class FaceRecognizer:
                 continue
 
             frame_buffer.append(frame)
-            if len(frame_buffer) > 40:
+            if len(frame_buffer) > 80:
                 frame_buffer.pop(0)
 
             frame_counter += 1
@@ -267,9 +267,13 @@ class FaceRecognizer:
             emb = self._get_sface_embedding(frame)
             if emb is None:
                 continue
-            if any(self._sface_sim(emb, e) > 0.7 for e in new_embeddings):
-                continue  # skip near-duplicate
+            # 0.50 threshold: keep embedding if it differs meaningfully from all stored ones.
+            # SFace same-face similarity is typically 0.80-0.95, so 0.50 keeps diverse samples
+            # without letting in faces from different people (recognition threshold is 0.38).
+            if any(self._sface_sim(emb, e) > 0.50 for e in new_embeddings):
+                continue
             new_embeddings.append(emb)
+        logging.info(f'Migration extracted {len(new_embeddings)} unique SFace embeddings for {name}')
 
         if not new_embeddings:
             logging.warning(f'Migration failed for {name}: SFace found no face in buffered frames')
@@ -325,13 +329,16 @@ class FaceRecognizer:
                     all_types = list(self.model_types)
                     all_names = list(self.known_face_names)
 
+                # For heavy model keep buffalo_sc threshold (0.7); for sface use 0.50
+                dedup_thresh = 0.50 if use_sface else 0.7
+
                 is_known = False
                 for embs, mtype, mname in zip(all_encodings, all_types, all_names):
                     if mtype != model_label:
                         continue
                     for e in embs:
                         sim = self._sface_sim(embedding, e) if use_sface else self._heavy_sim(embedding, e)
-                        if sim > 0.7:
+                        if sim > dedup_thresh:
                             logging.info(f'Matches existing {mname}, skipping frame.')
                             is_known = True
                             break
@@ -340,7 +347,7 @@ class FaceRecognizer:
 
                 if not is_known:
                     too_similar = any(
-                        (self._sface_sim(embedding, e) if use_sface else self._heavy_sim(embedding, e)) > 0.7
+                        (self._sface_sim(embedding, e) if use_sface else self._heavy_sim(embedding, e)) > dedup_thresh
                         for e in session_embeddings
                     )
                     if not too_similar:
