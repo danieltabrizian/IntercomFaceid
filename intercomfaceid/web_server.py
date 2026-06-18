@@ -49,7 +49,7 @@ nav button {
 }
 nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
 nav button:hover:not(.active) { color: var(--text); }
-.tab { display: none; padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+.tab { display: none; padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
 .tab.active { display: block; }
 
 /* Events */
@@ -85,19 +85,70 @@ nav button:hover:not(.active) { color: var(--text); }
 .ev-sim    { font-size: 12px; color: var(--muted); }
 
 /* Analytics */
-.stats { display: flex; gap: 12px; margin-bottom: 20px; }
+.stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .stat {
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  padding: 16px 20px; flex: 1;
+  padding: 16px 20px; flex: 1; min-width: 120px;
 }
 .stat .val { font-size: 30px; font-weight: 700; line-height: 1; }
 .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 5px; text-transform: uppercase; letter-spacing: .5px; }
-.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+/* Command pills */
+.section-title {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px;
+}
+.cmd-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cmd-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 100px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--muted);
+  transition: border-color .15s, color .15s, background .15s;
+  font-family: monospace;
+}
+.cmd-pill:hover { border-color: var(--accent); color: var(--text); }
+.cmd-pill.active { background: #172554; border-color: var(--accent); color: var(--accent); }
+.cmd-pill .cmd-count {
+  background: var(--surface2); border-radius: 100px;
+  padding: 1px 7px; font-size: 11px; font-weight: 700; color: var(--muted);
+}
+.cmd-pill.active .cmd-count { background: #1d3461; color: #93c5fd; }
+
+/* Charts */
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 @media(max-width:700px){ .charts { grid-template-columns: 1fr; } .stats { flex-direction: column; } }
 .chart-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px;
 }
 .chart-card h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px; }
+
+/* Heatmap */
+.heatmap-card { margin-bottom: 16px; }
+.hm-wrap { overflow-x: auto; }
+.hm-grid {
+  display: grid;
+  grid-template-columns: 34px repeat(24, minmax(22px, 1fr));
+  gap: 2px;
+  min-width: 560px;
+}
+.hm-cell {
+  border-radius: 3px; aspect-ratio: 1;
+  font-size: 8px; color: rgba(255,255,255,.7);
+  display: flex; align-items: center; justify-content: center;
+  cursor: default; transition: opacity .1s;
+}
+.hm-cell:hover { opacity: .75; }
+.hm-hlabel {
+  font-size: 9px; color: var(--muted);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 3px; height: 20px;
+}
+.hm-dlabel {
+  font-size: 10px; color: var(--muted);
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 6px;
+}
+.hm-corner { height: 20px; }
 
 /* Faces */
 .faces-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
@@ -154,9 +205,18 @@ nav button:hover:not(.active) { color: var(--text); }
 
 <div id="analytics" class="tab">
   <div class="stats" id="stats"></div>
+
+  <div class="section-title">Filter by code</div>
+  <div class="cmd-bar" id="cmd-bar"></div>
+
   <div class="charts">
-    <div class="chart-card"><h3>Bell rings by hour of day</h3><canvas id="hourChart"></canvas></div>
-    <div class="chart-card"><h3>Bell rings by day of week</h3><canvas id="dowChart"></canvas></div>
+    <div class="chart-card"><h3>Hour of day</h3><canvas id="hourChart"></canvas></div>
+    <div class="chart-card"><h3>Day of week</h3><canvas id="dowChart"></canvas></div>
+  </div>
+
+  <div class="chart-card heatmap-card">
+    <h3>Activity heatmap — day × hour</h3>
+    <div class="hm-wrap"><div class="heatmap" id="heatmap"></div></div>
   </div>
 </div>
 
@@ -170,109 +230,217 @@ nav button:hover:not(.active) { color: var(--text); }
 </div>
 
 <script>
-let hChart=null, dChart=null;
+let hChart = null, dChart = null;
+let analyticsData = null;
+let selectedCmd = '__all__';
+
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const HOURS = Array.from({length:24}, (_,i) => i + ':00');
+
 const chartOpts = {
-  responsive:true, plugins:{legend:{display:false}},
-  scales:{
-    x:{grid:{color:'#1e293b'},ticks:{color:'#64748b'}},
-    y:{grid:{color:'#1e293b'},ticks:{color:'#64748b',stepSize:1},beginAtZero:true}
+  responsive: true,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b' } },
+    y: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', stepSize: 1 }, beginAtZero: true }
   }
 };
 
+// Pill colors cycle for different commands
+const PILL_COLORS = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#f97316'];
+
 document.querySelectorAll('nav button').forEach(b => {
   b.addEventListener('click', () => {
-    document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     const tab = b.dataset.tab;
     document.getElementById(tab).classList.add('active');
-    if(tab==='analytics') loadAnalytics();
-    if(tab==='faces') loadFaces();
+    if (tab === 'analytics') loadAnalytics();
+    if (tab === 'faces') loadFaces();
   });
 });
 
-function openLb(src){ document.getElementById('lb-img').src=src; document.getElementById('lb').classList.add('open'); }
-function closeLb(){ document.getElementById('lb').classList.remove('open'); }
+function openLb(src) { document.getElementById('lb-img').src = src; document.getElementById('lb').classList.add('open'); }
+function closeLb() { document.getElementById('lb').classList.remove('open'); }
 
-function fmt(iso){
-  const d=new Date(iso);
-  return d.toLocaleDateString()+' '+d.toLocaleTimeString();
+function fmt(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
 }
 
 const BADGE = {
-  bell_ring:       ['b-bell',  '🔔 Bell Ring'],
-  face_recognised: ['b-ok',    '✅ Recognised'],
-  face_denied:     ['b-denied','🚫 Denied'],
-  raw_command:     ['b-raw',   '📡 Serial'],
-  arduino_connected:    ['b-ard','🔌 Connected'],
-  arduino_disconnected: ['b-ard','⚠️ Disconnected'],
+  bell_ring:            ['b-bell',  '🔔 Bell Ring'],
+  face_recognized:      ['b-ok',    '✅ Recognised'],
+  face_denied:          ['b-denied','🚫 Denied'],
+  serial_command:       ['b-raw',   '📡 Serial'],
+  arduino_connected:    ['b-ard',   '🔌 Connected'],
+  arduino_disconnected: ['b-ard',   '⚠️ Disconnected'],
 };
 const ICON = {
-  bell_ring:'🔔', face_recognised:'👤', face_denied:'❓',
-  raw_command:'📡', arduino_connected:'🔌', arduino_disconnected:'⚠️'
+  bell_ring: '🔔', face_recognized: '👤', face_denied: '❓',
+  serial_command: '📡', arduino_connected: '🔌', arduino_disconnected: '⚠️'
 };
 
-function evHtml(e){
+function evHtml(e) {
   const [bcls, blbl] = BADGE[e.type] || ['b-raw', e.type];
   let thumb = e.snapshot
     ? `<img class="ev-thumb" src="snapshots/${e.snapshot}" onclick="openLb('snapshots/${e.snapshot}')" onerror="this.parentNode.querySelector('.ev-icon').style.display='flex';this.style.display='none'" /><div class="ev-icon" style="display:none">${ICON[e.type]||'•'}</div>`
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
   let detail = '';
-  if(e.type==='face_recognised')
-    detail = `<div class="ev-name">${e.person||''}</div><div class="ev-sim">${e.similarity?Math.round(e.similarity*100)+'% match':''}</div>`;
-  else if(e.type==='face_denied')
-    detail = `<div class="ev-detail">Best similarity: ${e.similarity!=null?Math.round(e.similarity*100)+'%':'no face detected'}</div>`;
-  else if(e.raw_command)
-    detail = `<div class="ev-detail">${e.raw_command}</div>`;
-  else if(e.message)
+  if (e.type === 'face_recognized')
+    detail = `<div class="ev-name">${e.name||''}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
+  else if (e.type === 'face_denied')
+    detail = `<div class="ev-detail">Best similarity: ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}</div>`;
+  else if (e.type === 'serial_command')
+    detail = `<div class="ev-detail">${e.command||''}</div>`;
+  else if (e.message)
     detail = `<div class="ev-detail">${e.message}</div>`;
   return `<div class="ev">${thumb}<div class="ev-body"><div class="ev-row"><span class="badge ${bcls}">${blbl}</span><span class="ev-time">${fmt(e.timestamp)}</span></div>${detail}</div></div>`;
 }
 
-async function loadEvents(){
-  try{
+async function loadEvents() {
+  try {
     const r = await fetch('api/events');
     const events = await r.json();
     const el = document.getElementById('events-list');
     el.innerHTML = events.length ? events.map(evHtml).join('') : '<div class="empty">No events yet.</div>';
-  }catch(err){ console.error(err); }
+  } catch(err) { console.error(err); }
 }
 
-async function loadAnalytics(){
-  try{
+async function loadAnalytics() {
+  try {
     const r = await fetch('api/analytics');
-    const d = await r.json();
-    const peakH = d.hour_counts ? d.hour_counts.indexOf(Math.max(...d.hour_counts)) : 0;
-    const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    const peakD = d.dow_counts ? days[d.dow_counts.indexOf(Math.max(...d.dow_counts))] : '-';
-    document.getElementById('stats').innerHTML = `
-      <div class="stat"><div class="val">${d.total_events||0}</div><div class="lbl">Total Events</div></div>
-      <div class="stat"><div class="val">${d.bell_rings||0}</div><div class="lbl">Bell Rings</div></div>
-      <div class="stat"><div class="val">${peakH}:00</div><div class="lbl">Peak Hour</div></div>
-      <div class="stat"><div class="val">${peakD}</div><div class="lbl">Busiest Day</div></div>
-    `;
-    if(hChart) hChart.destroy();
-    hChart = new Chart(document.getElementById('hourChart'),{
-      type:'bar',
-      data:{labels:Array.from({length:24},(_,i)=>i+':00'),datasets:[{data:d.hour_counts||new Array(24).fill(0),backgroundColor:'#3b82f6',borderRadius:4}]},
-      options:chartOpts
-    });
-    if(dChart) dChart.destroy();
-    dChart = new Chart(document.getElementById('dowChart'),{
-      type:'bar',
-      data:{labels:days,datasets:[{data:d.dow_counts||new Array(7).fill(0),backgroundColor:'#8b5cf6',borderRadius:4}]},
-      options:chartOpts
-    });
-  }catch(err){ console.error(err); }
+    analyticsData = await r.json();
+    renderStats();
+    renderCmdBar();
+    updateCharts();
+  } catch(err) { console.error(err); }
 }
 
-async function loadFaces(){
-  try{
+function renderStats() {
+  const d = analyticsData;
+  const topCmd = d.command_list && d.command_list.length ? d.command_list[0] : null;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="val">${d.total_serial_commands||0}</div><div class="lbl">Serial Commands</div></div>
+    <div class="stat"><div class="val">${d.unique_commands||0}</div><div class="lbl">Unique Codes</div></div>
+    <div class="stat"><div class="val">${d.bell_rings||0}</div><div class="lbl">Bell Rings</div></div>
+    <div class="stat"><div class="val" style="font-size:16px;padding-top:4px">${topCmd ? topCmd.command : '—'}</div><div class="lbl">Most frequent code</div></div>
+  `;
+}
+
+function renderCmdBar() {
+  const d = analyticsData;
+  const bar = document.getElementById('cmd-bar');
+  const allTotal = d.total_serial_commands || 0;
+  let html = `<button class="cmd-pill ${selectedCmd==='__all__'?'active':''}" onclick="selectCmd('__all__')">
+    <span>All codes</span><span class="cmd-count">${allTotal}</span>
+  </button>`;
+  (d.command_list || []).forEach((c, i) => {
+    const color = PILL_COLORS[i % PILL_COLORS.length];
+    const active = selectedCmd === c.command;
+    html += `<button class="cmd-pill ${active?'active':''}" onclick="selectCmd(${JSON.stringify(c.command)})"
+      style="${active ? '' : `--pill-color:${color}`}">
+      <span style="color:${active?'inherit':color}">${c.command}</span>
+      <span class="cmd-count">${c.total}</span>
+    </button>`;
+  });
+  bar.innerHTML = html;
+}
+
+function selectCmd(cmd) {
+  selectedCmd = cmd;
+  renderCmdBar();
+  updateCharts();
+}
+
+function getSelectedData() {
+  const d = analyticsData;
+  if (selectedCmd === '__all__') {
+    const hourCounts = new Array(24).fill(0);
+    const dowCounts  = new Array(7).fill(0);
+    const heatmap    = Array.from({length:7}, () => new Array(24).fill(0));
+    for (const c of Object.values(d.commands || {})) {
+      c.hour_counts.forEach((v, i) => hourCounts[i] += v);
+      c.dow_counts.forEach((v, i)  => dowCounts[i]  += v);
+      c.heatmap.forEach((row, day) => row.forEach((v, hr) => heatmap[day][hr] += v));
+    }
+    return { hourCounts, dowCounts, heatmap };
+  }
+  const c = (d.commands || {})[selectedCmd];
+  if (!c) return {
+    hourCounts: new Array(24).fill(0),
+    dowCounts:  new Array(7).fill(0),
+    heatmap:    Array.from({length:7}, () => new Array(24).fill(0))
+  };
+  return { hourCounts: c.hour_counts, dowCounts: c.dow_counts, heatmap: c.heatmap };
+}
+
+function updateCharts() {
+  const { hourCounts, dowCounts, heatmap } = getSelectedData();
+  const color = selectedCmd === '__all__' ? '#3b82f6'
+    : PILL_COLORS[(analyticsData.command_list||[]).findIndex(c=>c.command===selectedCmd) % PILL_COLORS.length];
+
+  if (hChart) hChart.destroy();
+  hChart = new Chart(document.getElementById('hourChart'), {
+    type: 'bar',
+    data: {
+      labels: HOURS,
+      datasets: [{ data: hourCounts, backgroundColor: color + 'cc', borderRadius: 4 }]
+    },
+    options: chartOpts
+  });
+
+  if (dChart) dChart.destroy();
+  dChart = new Chart(document.getElementById('dowChart'), {
+    type: 'bar',
+    data: {
+      labels: DAYS,
+      datasets: [{ data: dowCounts, backgroundColor: color + 'aa', borderRadius: 4 }]
+    },
+    options: chartOpts
+  });
+
+  renderHeatmap(heatmap, color);
+}
+
+function renderHeatmap(heatmap, baseColor) {
+  const max = Math.max(...heatmap.flat(), 1);
+  // Parse hex color to rgb for alpha blending
+  const r = parseInt(baseColor.slice(1,3),16);
+  const g = parseInt(baseColor.slice(3,5),16);
+  const b = parseInt(baseColor.slice(5,7),16);
+
+  let html = '<div class="hm-grid">';
+  // Header row: corner + hour labels
+  html += '<div class="hm-corner"></div>';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="hm-hlabel">${h % 3 === 0 ? h : ''}</div>`;
+  }
+  // Data rows
+  for (let d = 0; d < 7; d++) {
+    html += `<div class="hm-dlabel">${DAYS[d]}</div>`;
+    for (let h = 0; h < 24; h++) {
+      const v = heatmap[d][h];
+      const alpha = v === 0 ? 0 : 0.12 + (v / max) * 0.88;
+      const bg = v === 0
+        ? 'var(--surface2)'
+        : `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+      const label = v > 0 ? v : '';
+      html += `<div class="hm-cell" style="background:${bg}" title="${DAYS[d]} ${h}:00 — ${v} event${v!==1?'s':''}">${label}</div>`;
+    }
+  }
+  html += '</div>';
+  document.getElementById('heatmap').innerHTML = html;
+}
+
+async function loadFaces() {
+  try {
     const r = await fetch('api/faces');
     const faces = await r.json();
     const el = document.getElementById('faces-grid');
-    if(!faces.length){ el.innerHTML='<div class="empty">No faces enrolled.</div>'; return; }
-    el.innerHTML = faces.map(f=>`
+    if (!faces.length) { el.innerHTML = '<div class="empty">No faces enrolled.</div>'; return; }
+    el.innerHTML = faces.map(f => `
       <div class="face-card" id="fc-${CSS.escape(f.name)}">
         ${f.has_snapshot
           ? `<img class="face-photo" src="face-snapshots/${encodeURIComponent(f.name)}.jpg" onerror="this.nextElementSibling.style.display='flex';this.style.display='none'" /><div class="face-ph" style="display:none">👤</div>`
@@ -280,17 +448,17 @@ async function loadFaces(){
         <div class="face-body">
           <div class="face-name">${f.name}</div>
           <div class="face-meta">${f.embedding_count} sample${f.embedding_count!==1?'s':''}</div>
-          <button class="btn-del" onclick="delFace('${f.name.replace(/'/g,"\\'")}')">Remove</button>
+          <button class="btn-del" onclick="delFace(${JSON.stringify(f.name)})">Remove</button>
         </div>
       </div>`).join('');
-  }catch(err){ console.error(err); }
+  } catch(err) { console.error(err); }
 }
 
-async function delFace(name){
-  if(!confirm('Remove '+name+' from face registry?')) return;
-  const r = await fetch('api/faces/'+encodeURIComponent(name)+'/delete',{method:'POST'});
+async function delFace(name) {
+  if (!confirm('Remove ' + name + ' from face registry?')) return;
+  const r = await fetch('api/faces/' + encodeURIComponent(name) + '/delete', {method:'POST'});
   const d = await r.json();
-  if(d.success) document.getElementById('fc-'+CSS.escape(name))?.remove();
+  if (d.success) document.getElementById('fc-' + CSS.escape(name))?.remove();
 }
 
 loadEvents();
@@ -317,23 +485,46 @@ async def get_analytics():
     if _event_logger is None:
         return {}
     events = _event_logger.get_all()
-    hour_counts = [0] * 24
-    dow_counts = [0] * 7
+
+    commands = {}   # command_str -> {total, hour_counts[24], dow_counts[7], heatmap[7][24]}
     bell_rings = 0
+
     for e in events:
-        if e.get('type') == 'bell_ring':
+        etype = e.get('type')
+        if etype == 'bell_ring':
             bell_rings += 1
-            try:
-                dt = datetime.fromisoformat(e['timestamp'])
-                hour_counts[dt.hour] += 1
-                dow_counts[dt.weekday()] += 1
-            except Exception:
-                pass
+        if etype != 'serial_command':
+            continue
+        cmd = e.get('command', '')
+        if not cmd:
+            continue
+        if cmd not in commands:
+            commands[cmd] = {
+                'total': 0,
+                'hour_counts': [0] * 24,
+                'dow_counts':  [0] * 7,
+                'heatmap':     [[0] * 24 for _ in range(7)],
+            }
+        commands[cmd]['total'] += 1
+        try:
+            dt = datetime.fromisoformat(e['timestamp'])
+            commands[cmd]['hour_counts'][dt.hour] += 1
+            commands[cmd]['dow_counts'][dt.weekday()] += 1
+            commands[cmd]['heatmap'][dt.weekday()][dt.hour] += 1
+        except Exception:
+            pass
+
+    command_list = sorted(
+        [{'command': k, 'total': v['total']} for k, v in commands.items()],
+        key=lambda x: -x['total']
+    )
+
     return {
-        'total_events': len(events),
+        'total_serial_commands': sum(c['total'] for c in command_list),
+        'unique_commands': len(commands),
         'bell_rings': bell_rings,
-        'hour_counts': hour_counts,
-        'dow_counts': dow_counts,
+        'command_list': command_list,
+        'commands': commands,
     }
 
 
