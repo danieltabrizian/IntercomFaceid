@@ -160,8 +160,8 @@ class FaceRecognizer:
         frame_buffer = [frame]
         fps_counter = 0
         fps_timer = time.time()
-        embed_frames = 0
-        embed_ms_total = 0.0
+        fast_ms, fast_frames = 0.0, 0
+        heavy_ms, heavy_frames = 0.0, 0
         match = None
 
         while time.time() - start_time < capture_time:
@@ -185,12 +185,14 @@ class FaceRecognizer:
                 t0 = time.time()
                 if elapsed < FAST_PHASE_SECONDS and self._sface_ready:
                     match = self._try_fast(frame)
+                    fast_ms += (time.time() - t0) * 1000
+                    fast_frames += 1
                 elif elapsed >= FAST_PHASE_SECONDS:
                     match = self._try_heavy(frame, list(frame_buffer))
+                    heavy_ms += (time.time() - t0) * 1000
+                    heavy_frames += 1
                 else:
                     continue
-                embed_ms_total += (time.time() - t0) * 1000
-                embed_frames += 1
             except Exception as e:
                 logging.error(f'Recognition error: {e}')
                 continue
@@ -198,21 +200,28 @@ class FaceRecognizer:
             if match:
                 break
 
-        avg_ms = round(embed_ms_total / embed_frames, 1) if embed_frames else 0
         duration_s = round(time.time() - start_time, 1)
+        timing = {
+            'fast_avg_ms':    round(fast_ms  / fast_frames,  1) if fast_frames  else None,
+            'fast_frames':    fast_frames,
+            'heavy_avg_ms':   round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
+            'heavy_frames':   heavy_frames,
+            'duration_s':     duration_s,
+        }
 
         if match:
-            logging.info(f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
-                         f'{avg_ms}ms/frame avg over {embed_frames} frames')
+            logging.info(
+                f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
+                f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
+                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f'
+            )
             if self.event_logger is not None:
                 self.event_logger.log('face_recognized',
                                       name=match['name'],
                                       similarity=round(match['similarity'], 4),
                                       model=match['model'],
                                       snapshot=snapshot_filename,
-                                      avg_ms_per_frame=avg_ms,
-                                      frames=embed_frames,
-                                      duration_s=duration_s)
+                                      **timing)
             self._unlock_and_publish(match['name'])
             if match.get('migrate'):
                 threading.Thread(
@@ -221,14 +230,16 @@ class FaceRecognizer:
                     daemon=True
                 ).start()
         else:
-            logging.warning(f'No face matched — {avg_ms}ms/frame avg over {embed_frames} frames')
+            logging.warning(
+                f'No face matched — '
+                f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
+                f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f'
+            )
             if self.event_logger is not None:
                 self.event_logger.log('face_denied',
                                       similarity=None,
                                       snapshot=snapshot_filename,
-                                      avg_ms_per_frame=avg_ms,
-                                      frames=embed_frames,
-                                      duration_s=duration_s)
+                                      **timing)
 
     def _try_fast(self, frame):
         """Returns match dict or None. No side effects."""

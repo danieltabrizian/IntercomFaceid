@@ -294,17 +294,23 @@ function evHtml(e) {
   let thumb = e.snapshot
     ? `<img class="ev-thumb" src="snapshots/${e.snapshot}" onclick="openLb('snapshots/${e.snapshot}')" onerror="this.parentNode.querySelector('.ev-icon').style.display='flex';this.style.display='none'" /><div class="ev-icon" style="display:none">${ICON[e.type]||'•'}</div>`
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
-  const timingTag = (e.avg_ms_per_frame != null && e.frames)
-    ? `<span style="font-size:11px;color:var(--muted);margin-left:6px">${e.avg_ms_per_frame}ms/frame · ${e.frames}f · ${e.duration_s}s</span>`
-    : '';
+  function timingHtml(e) {
+    const parts = [];
+    if (e.fast_frames)  parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
+    if (e.heavy_frames) parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
+    if (e.duration_s)   parts.push(`${e.duration_s}s`);
+    return parts.length
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${parts.join(' &nbsp;·&nbsp; ')}</div>`
+      : '';
+  }
   let detail = '';
   if (e.type === 'recognition_started')
     detail = `<div class="ev-detail">Face recognition loop started</div>`;
   else if (e.type === 'face_recognized') {
     const modelTag = e.model ? ` <span style="font-size:10px;color:var(--muted)">[${e.model}]</span>` : '';
-    detail = `<div class="ev-name">${e.name||''}${modelTag}${timingTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
+    detail = `<div class="ev-name">${e.name||''}${modelTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>${timingHtml(e)}`;
   } else if (e.type === 'face_denied')
-    detail = `<div class="ev-detail">No match — best ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}${timingTag ? ' · '+e.avg_ms_per_frame+'ms/frame · '+e.frames+'f' : ''}</div>`;
+    detail = `<div class="ev-detail">No match${e.similarity != null ? ' — best '+Math.round(e.similarity*100)+'%' : ''}</div>${timingHtml(e)}`;
   else if (e.type === 'face_migrated')
     detail = `<div class="ev-detail">${e.name||''} → SFace (${e.embeddings||0} embeddings)</div>`;
   else if (e.type === 'hex_received')
