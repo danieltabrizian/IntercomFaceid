@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: Face ID for Intercom
-version: "3.1.3"
+version: "3.2.0"
 slug: faceid_intercom
 description: FaceId for Intercom
 url: "https://github.com/danieltabrizian/IntercomFaceid/tree/main/intercomfaceid"
@@ -17,11 +17,10 @@ map:
   - config:rw
   - data:rw
 hassio_api: true
-memory: "1024M"
+memory: "512M"
 devices:
   - /dev/ttyUSB0:/dev/ttyUSB0
   - /dev/video0:/dev/video0
-  - /dev/dri/renderD128:/dev/dri/renderD128
 options:
   usb_port: "/dev/ttyUSB0"
   baudrate: 9600

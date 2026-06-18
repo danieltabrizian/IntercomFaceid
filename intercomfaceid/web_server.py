@@ -232,11 +232,9 @@ nav button:hover:not(.active) { color: var(--text); }
 
   <div class="section-title" style="margin-top:24px">System benchmark</div>
   <div class="chart-card heatmap-card">
-    <button id="bench-btn" class="bench-btn">Run CPU benchmark</button>
-    <button id="bench-igpu-btn" class="bench-btn" style="margin-left:8px">Run iGPU benchmark</button>
-    <span style="font-size:12px;color:var(--muted);margin-left:10px">~10s each, on ~20 live frames.</span>
+    <button id="bench-btn" class="bench-btn">Run benchmark</button>
+    <span style="font-size:12px;color:var(--muted);margin-left:10px">Times detect + embed on ~20 live frames (~10s).</span>
     <div id="bench-out" style="margin-top:14px"></div>
-    <div id="bench-igpu-out" style="margin-top:14px"></div>
   </div>
 
   <div class="section-title" style="margin-top:24px">Blur calibration</div>
@@ -410,37 +408,6 @@ function renderBench(d) {
   h += benchRow('TOTAL per frame', d.total_ms, true);
   h += '</table>';
   return h;
-}
-
-async function runIgpuBenchmark() {
-  const btn = document.getElementById('bench-igpu-btn');
-  const out = document.getElementById('bench-igpu-out');
-  btn.disabled = true;
-  btn.textContent = 'Running iGPU… (~15s)';
-  out.innerHTML = '';
-  try {
-    const r = await fetch('api/benchmark-igpu', { method: 'POST' });
-    const d = await r.json();
-    if (d.error) {
-      out.innerHTML = `<span style="color:var(--red)">iGPU: ${d.error}</span>`;
-    } else {
-      const cos = d.avg_cosine_cpu_vs_gpu;
-      const same = cos != null && cos > 0.99;
-      let h = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">
-        ${d.frames} frames · devices: ${(d.devices||[]).join(', ')} · GPU compile ${d.gpu_compile_s}s</div>
-        <table class="bench-table">`;
-      h += benchRow('embed CPU (onnxruntime)', d.cpu_embed_ms);
-      h += benchRow('embed iGPU (OpenVINO FP16)', d.gpu_embed_ms, true);
-      h += `<tr><td style="color:var(--muted)">CPU↔iGPU cosine</td>
-        <td style="font-weight:600;color:${same?'var(--green)':'var(--red)'}">${cos} ${same?'✓ same vectors':'⚠ differs'}</td></tr>`;
-      h += '</table>';
-      out.innerHTML = h;
-    }
-  } catch (e) {
-    out.innerHTML = `<span style="color:var(--red)">${e}</span>`;
-  }
-  btn.disabled = false;
-  btn.textContent = 'Run iGPU benchmark';
 }
 
 let calibChart = null;
@@ -653,7 +620,6 @@ async function delFace(name) {
 }
 
 document.getElementById('bench-btn').addEventListener('click', runBenchmark);
-document.getElementById('bench-igpu-btn').addEventListener('click', runIgpuBenchmark);
 
 loadEvents();
 setInterval(loadEvents, 10000);
@@ -751,13 +717,6 @@ def run_benchmark():
     if _face_recognizer is None:
         return {'error': 'no recognizer'}
     return _face_recognizer.benchmark()
-
-
-@app.post("/api/benchmark-igpu")
-def run_benchmark_igpu():
-    if _face_recognizer is None:
-        return {'error': 'no recognizer'}
-    return _face_recognizer.openvino_benchmark()
 
 
 @app.get("/snapshots/{filename}")
