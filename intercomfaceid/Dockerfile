@@ -19,9 +19,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Intel iGPU OpenCL runtime (NEO) for the experimental OpenVINO GPU benchmark.
-# intel-opencl-icd lives in the non-free component, so enable it first.
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" \
-      > /etc/apt/sources.list.d/nonfree.list && \
+# intel-opencl-icd lives in non-free; enable it by adding the components to the
+# existing deb822 sources (a separate .list conflicts on Signed-By).
+RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' \
+      /etc/apt/sources.list.d/debian.sources && \
     apt-get update && \
     apt-get install -y intel-opencl-icd ocl-icd-libopencl1 clinfo && \
     apt-get clean
