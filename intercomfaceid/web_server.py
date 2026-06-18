@@ -273,6 +273,7 @@ function fmt(iso) {
 const BADGE = {
   bell_ring:            ['b-bell',  '🔔 Bell'],
   hex_received:         ['b-bell',  '📶 Signal'],
+  recognition_started:  ['b-raw',   '🔍 Scanning'],
   face_recognized:      ['b-ok',    '✅ Recognised'],
   face_denied:          ['b-denied','🚫 Denied'],
   face_migrated:        ['b-mig',   '⚡ Migrated'],
@@ -282,8 +283,9 @@ const BADGE = {
   arduino_disconnected: ['b-ard',   '⚠️ Disconnected'],
 };
 const ICON = {
-  bell_ring: '🔔', hex_received: '📶', face_recognized: '👤', face_denied: '❓',
-  face_migrated: '⚡', door_unlocked: '🔓', serial_command: '📡',
+  bell_ring: '🔔', hex_received: '📶', recognition_started: '🔍',
+  face_recognized: '👤', face_denied: '❓', face_migrated: '⚡',
+  door_unlocked: '🔓', serial_command: '📡',
   arduino_connected: '🔌', arduino_disconnected: '⚠️'
 };
 
@@ -292,12 +294,17 @@ function evHtml(e) {
   let thumb = e.snapshot
     ? `<img class="ev-thumb" src="snapshots/${e.snapshot}" onclick="openLb('snapshots/${e.snapshot}')" onerror="this.parentNode.querySelector('.ev-icon').style.display='flex';this.style.display='none'" /><div class="ev-icon" style="display:none">${ICON[e.type]||'•'}</div>`
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
+  const timingTag = (e.avg_ms_per_frame != null && e.frames)
+    ? `<span style="font-size:11px;color:var(--muted);margin-left:6px">${e.avg_ms_per_frame}ms/frame · ${e.frames}f · ${e.duration_s}s</span>`
+    : '';
   let detail = '';
-  if (e.type === 'face_recognized') {
+  if (e.type === 'recognition_started')
+    detail = `<div class="ev-detail">Face recognition loop started</div>`;
+  else if (e.type === 'face_recognized') {
     const modelTag = e.model ? ` <span style="font-size:10px;color:var(--muted)">[${e.model}]</span>` : '';
-    detail = `<div class="ev-name">${e.name||''}${modelTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
+    detail = `<div class="ev-name">${e.name||''}${modelTag}${timingTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
   } else if (e.type === 'face_denied')
-    detail = `<div class="ev-detail">Best similarity: ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}</div>`;
+    detail = `<div class="ev-detail">No match — best ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}${timingTag ? ' · '+e.avg_ms_per_frame+'ms/frame · '+e.frames+'f' : ''}</div>`;
   else if (e.type === 'face_migrated')
     detail = `<div class="ev-detail">${e.name||''} → SFace (${e.embeddings||0} embeddings)</div>`;
   else if (e.type === 'hex_received')

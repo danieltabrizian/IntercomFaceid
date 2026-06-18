@@ -145,7 +145,6 @@ class FaceRecognizer:
             logging.warning('Could not grab frame for snapshot.')
             return
 
-        # Always save a snapshot for the activity log
         snapshot_filename = None
         if self.event_logger is not None:
             snapshot_filename = self.event_logger.save_snapshot(frame, prefix='bell')
@@ -154,11 +153,16 @@ class FaceRecognizer:
         if not run_recognition:
             return
 
-        # Recognition loop — runs for up to capture_time seconds
+        if self.event_logger is not None:
+            self.event_logger.log('recognition_started')
+
         start_time = time.time()
         frame_buffer = [frame]
-        frame_counter = 0
+        fps_counter = 0
         fps_timer = time.time()
+        embed_frames = 0
+        embed_ms_total = 0.0
+        match = None
 
         while time.time() - start_time < capture_time:
             ret, frame = self.stream_manager.get_frame()
@@ -169,39 +173,75 @@ class FaceRecognizer:
             if len(frame_buffer) > 80:
                 frame_buffer.pop(0)
 
-            frame_counter += 1
+            fps_counter += 1
             now = time.time()
             if now - fps_timer >= 1.0:
-                logging.info(f'Recognition FPS: {frame_counter / (now - fps_timer):.1f}')
-                frame_counter = 0
+                logging.info(f'Recognition FPS: {fps_counter / (now - fps_timer):.1f}')
+                fps_counter = 0
                 fps_timer = now
 
             elapsed = now - start_time
             try:
+                t0 = time.time()
                 if elapsed < FAST_PHASE_SECONDS and self._sface_ready:
-                    if self._try_fast(frame, snapshot_filename):
-                        return
+                    match = self._try_fast(frame)
                 elif elapsed >= FAST_PHASE_SECONDS:
-                    if self._try_heavy(frame, snapshot_filename, list(frame_buffer)):
-                        return
+                    match = self._try_heavy(frame, list(frame_buffer))
+                else:
+                    continue
+                embed_ms_total += (time.time() - t0) * 1000
+                embed_frames += 1
             except Exception as e:
                 logging.error(f'Recognition error: {e}')
+                continue
 
-        logging.warning('No face matched within capture window.')
-        if self.event_logger is not None:
-            self.event_logger.log('face_denied', similarity=None, snapshot=snapshot_filename)
+            if match:
+                break
 
-    def _try_fast(self, frame, snapshot_filename):
+        avg_ms = round(embed_ms_total / embed_frames, 1) if embed_frames else 0
+        duration_s = round(time.time() - start_time, 1)
+
+        if match:
+            logging.info(f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
+                         f'{avg_ms}ms/frame avg over {embed_frames} frames')
+            if self.event_logger is not None:
+                self.event_logger.log('face_recognized',
+                                      name=match['name'],
+                                      similarity=round(match['similarity'], 4),
+                                      model=match['model'],
+                                      snapshot=snapshot_filename,
+                                      avg_ms_per_frame=avg_ms,
+                                      frames=embed_frames,
+                                      duration_s=duration_s)
+            self._unlock_and_publish(match['name'])
+            if match.get('migrate'):
+                threading.Thread(
+                    target=self._migrate_to_sface,
+                    args=(match['name'], list(frame_buffer)),
+                    daemon=True
+                ).start()
+        else:
+            logging.warning(f'No face matched — {avg_ms}ms/frame avg over {embed_frames} frames')
+            if self.event_logger is not None:
+                self.event_logger.log('face_denied',
+                                      similarity=None,
+                                      snapshot=snapshot_filename,
+                                      avg_ms_per_frame=avg_ms,
+                                      frames=embed_frames,
+                                      duration_s=duration_s)
+
+    def _try_fast(self, frame):
+        """Returns match dict or None. No side effects."""
         with self._lock:
             fast_idx = [i for i, m in enumerate(self.model_types) if m == 'sface']
             if not fast_idx:
-                return False
+                return None
             names = [self.known_face_names[i] for i in fast_idx]
             encodings = [self.known_face_encodings[i] for i in fast_idx]
 
         embedding = self._get_sface_embedding(frame)
         if embedding is None:
-            return False
+            return None
 
         best_score, best_name = 0.0, None
         for name, embs in zip(names, encodings):
@@ -210,26 +250,21 @@ class FaceRecognizer:
                 best_score, best_name = score, name
 
         if best_score >= FAST_THRESHOLD:
-            logging.info(f'[SFace] {best_name} {best_score*100:.1f}%')
-            if self.event_logger is not None:
-                self.event_logger.log('face_recognized', name=best_name,
-                                      similarity=round(best_score, 4),
-                                      model='sface', snapshot=snapshot_filename)
-            self._unlock_and_publish(best_name)
-            return True
-        return False
+            return {'name': best_name, 'similarity': best_score, 'model': 'sface', 'migrate': False}
+        return None
 
-    def _try_heavy(self, frame, snapshot_filename, frames_buffer):
+    def _try_heavy(self, frame, frames_buffer):
+        """Returns match dict (with migrate=True) or None. No side effects."""
         with self._lock:
             heavy_idx = [i for i, m in enumerate(self.model_types) if m == 'buffalo_sc']
             if not heavy_idx:
-                return False
+                return None
             names = [self.known_face_names[i] for i in heavy_idx]
             encodings = [self.known_face_encodings[i] for i in heavy_idx]
 
         embedding = self._get_heavy_embedding(frame)
         if embedding is None:
-            return False
+            return None
 
         similarities = [
             max(self._heavy_sim(embedding, e) for e in embs)
@@ -239,20 +274,9 @@ class FaceRecognizer:
         best_score = float(similarities[best_idx])
 
         if best_score >= HEAVY_THRESHOLD:
-            name = names[best_idx]
-            logging.info(f'[buffalo_sc] {name} {best_score*100:.1f}% — queuing migration')
-            if self.event_logger is not None:
-                self.event_logger.log('face_recognized', name=name,
-                                      similarity=round(best_score, 4),
-                                      model='buffalo_sc', snapshot=snapshot_filename)
-            self._unlock_and_publish(name)
-            threading.Thread(
-                target=self._migrate_to_sface, args=(name, frames_buffer), daemon=True
-            ).start()
-            return True
-
-        logging.info(f'[buffalo_sc] best {best_score*100:.1f}% — denied')
-        return False
+            return {'name': names[best_idx], 'similarity': best_score,
+                    'model': 'buffalo_sc', 'migrate': True}
+        return None
 
     # ---------------------------------------------------------- migration
 
