@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --upgrade pip
 
 # Install Python dependencies
-RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial
+RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial fastapi "uvicorn[standard]"
 
 # Set the working directory
 WORKDIR /usr/src/app

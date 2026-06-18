@@ -7,7 +7,7 @@ import sys
 import threading
 
 class ArduinoHandler:
-    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, retry_delay=5):
+    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, retry_delay=5, event_logger=None):
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
         config = self.load_config()
@@ -21,10 +21,11 @@ class ArduinoHandler:
         self.retry_delay = retry_delay
         self.ser = None
         self.mqtt_client = None
+        self.event_logger = event_logger
         self._lock = threading.Lock()
         self._last_activity = time.time()
-        self._reconnecting = False       # guard: only one reconnect at a time
-        self._disconnected_since = None  # set when we lose connection; drives hard restart
+        self._reconnecting = False
+        self._disconnected_since = None
         self.connect()
         self._start_watchdog()
 
@@ -58,8 +59,10 @@ class ArduinoHandler:
                 with self._lock:
                     self.ser = ser
                     self._last_activity = time.time()
-                    self._disconnected_since = None  # clear on successful connect
+                    self._disconnected_since = None
                 logging.info(f"Connected to Arduino on {self.port}")
+                if self.event_logger is not None:
+                    self.event_logger.log('arduino_connected', port=self.port)
                 return
             except (serial.SerialException, OSError) as e:
                 attempt += 1
@@ -101,6 +104,8 @@ class ArduinoHandler:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8').strip()
                 self._last_activity = time.time()
+                if line and self.event_logger is not None:
+                    self.event_logger.log('serial_command', command=line)
                 return line
         except (serial.SerialException, OSError) as e:
             logging.error(f"Error reading from serial: {e}")
@@ -142,6 +147,8 @@ class ArduinoHandler:
             self.ser = None
             if self._disconnected_since is None:
                 self._disconnected_since = time.time()
+                if self.event_logger is not None:
+                    self.event_logger.log('arduino_disconnected', port=self.port)
 
         logging.info("Attempting to reconnect to Arduino...")
         if ser is not None:
