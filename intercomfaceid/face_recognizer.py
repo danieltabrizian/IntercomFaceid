@@ -38,6 +38,7 @@ class FaceRecognizer:
         self.event_logger = event_logger
         self.blur_calibration = blur_calibration
         self._logged_res = False
+        self._ov_compiled = None   # lazily-compiled OpenVINO GPU model (benchmark only)
 
         try:
             cores = os.cpu_count() or 2
@@ -374,6 +375,101 @@ class FaceRecognizer:
             'total_ms': round((d or 0) + (e or 0), 1),
         }
         logging.info(f'Benchmark: {result}')
+        return result
+
+    def openvino_benchmark(self, iterations=20):
+        """EXPERIMENTAL: run the SAME buffalo ArcFace .onnx on the Intel iGPU via
+        the standalone OpenVINO runtime (FP16), compared against the CPU
+        (onnxruntime) path. Also reports the cosine similarity between CPU and GPU
+        embeddings of the same crop — proving they're the same vector space (so
+        enrolled faces stay valid). Production recognition is untouched."""
+        try:
+            import openvino as ov
+        except Exception as e:
+            return {'error': f'openvino not installed: {e}'}
+
+        # Lazy-compile the recognition model on the GPU (first time is slow).
+        if getattr(self, '_ov_compiled', None) is None:
+            try:
+                core = ov.Core()
+                devices = list(core.available_devices)
+                if not any(d.startswith('GPU') for d in devices):
+                    return {'error': f'No GPU device visible to OpenVINO. Available: {devices}'}
+                model = core.read_model(self._rec.model_file)
+                t = time.time()
+                self._ov_compiled = core.compile_model(model, 'GPU', {'INFERENCE_PRECISION_HINT': 'f16'})
+                self._ov_compile_s = round(time.time() - t, 1)
+                self._ov_devices = devices
+                logging.info(f'OpenVINO GPU compile ok ({self._ov_compile_s}s), devices={devices}')
+            except Exception as e:
+                return {'error': f'GPU compile failed: {e}'}
+
+        compiled = self._ov_compiled
+
+        if not self.stream_manager.is_capturing:
+            self.stream_manager.start_video_stream()
+        frames = []
+        deadline = time.time() + 12
+        while len(frames) < iterations and time.time() < deadline:
+            ret, frame = self.stream_manager.get_frame()
+            if ret:
+                frames.append(frame)
+            else:
+                time.sleep(0.05)
+        if not frames:
+            return {'error': 'No frames available from stream'}
+
+        isz = tuple(int(x) for x in self._rec.input_size)
+        mean = float(self._rec.input_mean)
+        std = float(self._rec.input_std)
+
+        def make_blob(aligned):
+            return cv2.dnn.blobFromImage(aligned, 1.0 / std, isz, (mean, mean, mean), swapRB=True)
+
+        def aligned_for(f):
+            det = self._detect(f)
+            if det is not None:
+                _, kps = det
+                return face_align.norm_crop(f, landmark=kps, image_size=112)
+            fh, fw = f.shape[:2]
+            s = min(fh, fw)
+            cy, cx = fh // 2, fw // 2
+            return cv2.resize(f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2], isz)
+
+        # Warm up the GPU (first inference builds kernels)
+        try:
+            compiled(make_blob(aligned_for(frames[0])))
+        except Exception as e:
+            return {'error': f'GPU inference failed: {e}'}
+
+        def avg(l):
+            return round(sum(l) / len(l), 1) if l else None
+
+        cpu_ms, gpu_ms, cosines = [], [], []
+        for f in frames:
+            aligned = aligned_for(f)
+            t = time.time()
+            cpu_emb = self._rec.get_feat(aligned)
+            cpu_ms.append((time.time() - t) * 1000)
+            cpu_emb = cpu_emb[0] if getattr(cpu_emb, 'ndim', 1) == 2 else cpu_emb
+
+            blob = make_blob(aligned)
+            t = time.time()
+            res = compiled(blob)
+            gpu_ms.append((time.time() - t) * 1000)
+            gpu_emb = list(res.values())[0][0]
+
+            cosines.append(self._sim(cpu_emb, gpu_emb))
+
+        result = {
+            'frames': len(frames),
+            'devices': getattr(self, '_ov_devices', []),
+            'gpu_compile_s': getattr(self, '_ov_compile_s', None),
+            'cpu_embed_ms': avg(cpu_ms),
+            'gpu_embed_ms': avg(gpu_ms),
+            'avg_cosine_cpu_vs_gpu': round(sum(cosines) / len(cosines), 4) if cosines else None,
+        }
+        logging.info(f'OpenVINO benchmark: {result}')
         return result
 
     # ------------------------------------------------------- enrollment

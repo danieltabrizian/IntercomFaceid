@@ -13,11 +13,18 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     wget \
+    intel-opencl-icd \
+    ocl-icd-libopencl1 \
+    clinfo \
     && apt-get clean
 
 RUN pip install --upgrade pip
 
 RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial fastapi "uvicorn[standard]"
+
+# OpenVINO runtime for the experimental iGPU benchmark (standalone — does NOT
+# replace onnxruntime, so production CPU recognition is unaffected).
+RUN pip install --no-cache-dir "openvino==2024.6.0"
 
 WORKDIR /usr/src/app
 COPY . .
