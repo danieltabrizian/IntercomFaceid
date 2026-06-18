@@ -1,7 +1,5 @@
 FROM python:3.9-slim
 
-
-# Install system dependencies (build tools, g++, OpenCV, etc.)
 RUN apt-get update && apt-get install -y \
     build-essential \
     g++ \
@@ -14,18 +12,21 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     libgl1 \
     libglib2.0-0 \
+    wget \
     && apt-get clean
 
 RUN pip install --upgrade pip
 
-# Install Python dependencies
 RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt pyserial fastapi "uvicorn[standard]"
 
-# Set the working directory
-WORKDIR /usr/src/app
+# Download SFace models (YuNet detector + SFace recognizer)
+RUN mkdir -p /models && \
+    wget -q -O /models/yunet.onnx \
+      "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" && \
+    wget -q -O /models/sface.onnx \
+      "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
-# Copy the project files into the container
+WORKDIR /usr/src/app
 COPY . .
 
-# Run the Python script
-CMD ["python","-u", "main.py"]
+CMD ["python", "-u", "main.py"]

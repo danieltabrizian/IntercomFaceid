@@ -77,6 +77,7 @@ nav button:hover:not(.active) { color: var(--text); }
 .b-bell    { background: #172554; color: #60a5fa; }
 .b-ok      { background: #052e16; color: #4ade80; }
 .b-denied  { background: #450a0a; color: #f87171; }
+.b-mig     { background: #1c1917; color: #fbbf24; }
 .b-raw     { background: #1e1b4b; color: #a5b4fc; }
 .b-ard     { background: #292524; color: #fbbf24; }
 .ev-time   { font-size: 12px; color: var(--muted); }
@@ -273,13 +274,14 @@ const BADGE = {
   bell_ring:            ['b-bell',  '🔔 Bell Ring'],
   face_recognized:      ['b-ok',    '✅ Recognised'],
   face_denied:          ['b-denied','🚫 Denied'],
+  face_migrated:        ['b-mig',   '⚡ Migrated'],
   serial_command:       ['b-raw',   '📡 Serial'],
   arduino_connected:    ['b-ard',   '🔌 Connected'],
   arduino_disconnected: ['b-ard',   '⚠️ Disconnected'],
 };
 const ICON = {
   bell_ring: '🔔', face_recognized: '👤', face_denied: '❓',
-  serial_command: '📡', arduino_connected: '🔌', arduino_disconnected: '⚠️'
+  face_migrated: '⚡', serial_command: '📡', arduino_connected: '🔌', arduino_disconnected: '⚠️'
 };
 
 function evHtml(e) {
@@ -288,10 +290,13 @@ function evHtml(e) {
     ? `<img class="ev-thumb" src="snapshots/${e.snapshot}" onclick="openLb('snapshots/${e.snapshot}')" onerror="this.parentNode.querySelector('.ev-icon').style.display='flex';this.style.display='none'" /><div class="ev-icon" style="display:none">${ICON[e.type]||'•'}</div>`
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
   let detail = '';
-  if (e.type === 'face_recognized')
-    detail = `<div class="ev-name">${e.name||''}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
-  else if (e.type === 'face_denied')
+  if (e.type === 'face_recognized') {
+    const modelTag = e.model ? ` <span style="font-size:10px;color:var(--muted)">[${e.model}]</span>` : '';
+    detail = `<div class="ev-name">${e.name||''}${modelTag}</div><div class="ev-sim">${e.similarity ? Math.round(e.similarity*100)+'% match' : ''}</div>`;
+  } else if (e.type === 'face_denied')
     detail = `<div class="ev-detail">Best similarity: ${e.similarity != null ? Math.round(e.similarity*100)+'%' : 'no face detected'}</div>`;
+  else if (e.type === 'face_migrated')
+    detail = `<div class="ev-detail">${e.name||''} → SFace (${e.embeddings||0} embeddings)</div>`;
   else if (e.type === 'serial_command')
     detail = `<div class="ev-detail">${e.command||''}</div>`;
   else if (e.message)
@@ -447,7 +452,13 @@ async function loadFaces() {
           : `<div class="face-ph">👤</div>`}
         <div class="face-body">
           <div class="face-name">${f.name}</div>
-          <div class="face-meta">${f.embedding_count} sample${f.embedding_count!==1?'s':''}</div>
+          <div class="face-meta">
+            ${f.embedding_count} sample${f.embedding_count!==1?'s':''}
+            &nbsp;·&nbsp;
+            <span style="color:${f.model==='sface'?'var(--green)':'var(--amber)'}">
+              ${f.model==='sface'?'⚡ fast':'🔵 heavy'}
+            </span>
+          </div>
           <button class="btn-del" onclick="delFace(${JSON.stringify(f.name)})">Remove</button>
         </div>
       </div>`).join('');
