@@ -18,7 +18,7 @@ rtsp:
 webrtc:
   listen: ":8555"
   candidates:
-    - 192.168.2.45:18555   # host-mapped WebRTC port (see config.yaml ports)
+    - 192.168.2.45:18655   # host-mapped WebRTC port (see config.yaml ports)
 
 ffmpeg:
   bin: ffmpeg
