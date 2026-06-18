@@ -30,7 +30,10 @@ streams:
   #          only running when an H264 consumer is connected (on-demand).
   webcam:
     - ffmpeg:device?video=/dev/video0&input_format=mjpeg&video_size=640x480&framerate=15
-    - ffmpeg:webcam#video=h264#hardware=vaapi
+    # Software H264 encode. VAAPI (#hardware=vaapi) was tried but the iHD encoder
+    # EOF-crashes repeatedly on this Gen9.5 iGPU (same fragility as OpenVINO), so
+    # it stays software for reliability.
+    - ffmpeg:webcam#video=h264
 
 log:
   level: info
