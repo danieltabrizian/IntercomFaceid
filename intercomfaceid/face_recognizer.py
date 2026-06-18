@@ -19,10 +19,10 @@ FORCE_AFTER_MS  = 100    # if no frame processed in this long, process the next 
                          # regardless of blur (failsafe — never starve recognition).
                          # At 7 FPS (~143ms/frame) this means ~every detected face is
                          # processed, which is intentional during calibration.
-DETECT_MAX_SIDE = 320    # YuNet runs on a copy downscaled to this longest side.
-                         # Detection cost scales with pixel count; the source is 640x480
-                         # so this ~quarters detection time. The SFace crop is still
-                         # aligned from the full-res frame, so embedding quality is kept.
+DETECT_MAX_SIDE = 0      # 0 = disabled (detect on full-res frame). Set to e.g. 320 to
+                         # run YuNet on a downscaled copy for speed (crop still aligned
+                         # from full-res). Left OFF for now to measure raw per-model
+                         # latency; use the /api/benchmark button to compare full vs 320.
 
 
 class FaceRecognizer:
@@ -422,6 +422,93 @@ class FaceRecognizer:
                                       similarity=None,
                                       snapshot=snapshot_filename,
                                       **timing)
+
+    # ---------------------------------------------------------- benchmark
+
+    def benchmark(self, iterations=20):
+        """Measure raw per-model latency on live frames, as if a face were present.
+        No blur gate, no early-out. Synthesizes a centered 112x112 crop for the
+        SFace feature pass when no face is detected, so timing reflects the full
+        pipeline regardless of who's in frame. Returns averages in ms."""
+        if not self.stream_manager.is_capturing:
+            self.stream_manager.start_video_stream()
+
+        frames = []
+        deadline = time.time() + 12
+        while len(frames) < iterations and time.time() < deadline:
+            ret, frame = self.stream_manager.get_frame()
+            if ret:
+                frames.append(frame)
+            else:
+                time.sleep(0.05)
+        if not frames:
+            return {'error': 'No frames available from stream'}
+
+        h, w = frames[0].shape[:2]
+
+        def avg(lst):
+            return round(sum(lst) / len(lst), 1) if lst else None
+
+        buffalo, det_full, det_small, feat = [], [], [], []
+        faces_detected = 0
+
+        for f in frames:
+            # buffalo_sc full pipeline (own detection on a 320x240 resize)
+            t = time.time()
+            self._heavy_model.get(cv2.resize(f, (320, 240)))
+            buffalo.append((time.time() - t) * 1000)
+
+            if not self._sface_ready:
+                continue
+
+            fh, fw = f.shape[:2]
+            # YuNet detection at full resolution
+            t = time.time()
+            self._yunet.setInputSize((fw, fh))
+            _, faces = self._yunet.detect(f)
+            det_full.append((time.time() - t) * 1000)
+            has_face = faces is not None and len(faces) > 0
+            if has_face:
+                faces_detected += 1
+
+            # YuNet detection at 320 long side
+            scale = 320.0 / max(fh, fw)
+            small = cv2.resize(f, (round(fw * scale), round(fh * scale)))
+            t = time.time()
+            self._yunet.setInputSize((small.shape[1], small.shape[0]))
+            self._yunet.detect(small)
+            det_small.append((time.time() - t) * 1000)
+
+            # SFace feature extraction (align real face if present, else center crop)
+            t = time.time()
+            if has_face:
+                aligned = self._sface.alignCrop(f, faces[0])
+            else:
+                s = min(fh, fw)
+                cy, cx = fh // 2, fw // 2
+                crop = f[cy - s // 2:cy + s // 2, cx - s // 2:cx + s // 2]
+                aligned = cv2.resize(crop, (112, 112))
+            self._sface.feature(aligned)
+            feat.append((time.time() - t) * 1000)
+
+        result = {
+            'frames': len(frames),
+            'resolution': f'{w}x{h}',
+            'faces_detected': faces_detected,
+            'buffalo_ms': avg(buffalo),
+            'sface_ready': self._sface_ready,
+        }
+        if self._sface_ready:
+            df, ds, ft = avg(det_full), avg(det_small), avg(feat)
+            result.update({
+                'sface_detect_fullres_ms': df,
+                'sface_detect_320_ms': ds,
+                'sface_feature_ms': ft,
+                'sface_total_fullres_ms': round((df or 0) + (ft or 0), 1),
+                'sface_total_320_ms': round((ds or 0) + (ft or 0), 1),
+            })
+        logging.info(f'Benchmark: {result}')
+        return result
 
     # ---------------------------------------------------------- migration
 

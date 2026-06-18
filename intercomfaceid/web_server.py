@@ -170,6 +170,15 @@ nav button:hover:not(.active) { color: var(--text); }
   transition: background .15s;
 }
 .btn-del:hover { background: #5c1111; }
+.bench-btn {
+  background: #172554; color: var(--accent); border: 1px solid var(--accent);
+  border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
+  transition: background .15s;
+}
+.bench-btn:hover:not(:disabled) { background: #1d3461; }
+.bench-btn:disabled { opacity: .5; cursor: default; }
+.bench-table { font-size: 13px; border-collapse: collapse; }
+.bench-table td { padding: 4px 16px 4px 0; }
 
 /* Lightbox */
 .lb {
@@ -219,6 +228,13 @@ nav button:hover:not(.active) { color: var(--text); }
   <div class="chart-card heatmap-card">
     <h3>Activity heatmap — day × hour</h3>
     <div class="hm-wrap"><div class="heatmap" id="heatmap"></div></div>
+  </div>
+
+  <div class="section-title" style="margin-top:24px">System benchmark</div>
+  <div class="chart-card heatmap-card">
+    <button id="bench-btn" class="bench-btn">Run benchmark</button>
+    <span style="font-size:12px;color:var(--muted);margin-left:10px">Runs each model on ~20 live frames, as if a face were present (~10s).</span>
+    <div id="bench-out" style="margin-top:14px"></div>
   </div>
 
   <div class="section-title" style="margin-top:24px">Blur calibration</div>
@@ -354,6 +370,51 @@ async function loadAnalytics() {
     updateCharts();
   } catch(err) { console.error(err); }
   loadCalibration();
+}
+
+async function runBenchmark() {
+  const btn = document.getElementById('bench-btn');
+  const out = document.getElementById('bench-out');
+  btn.disabled = true;
+  btn.textContent = 'Running… (~10s)';
+  out.innerHTML = '';
+  try {
+    const r = await fetch('api/benchmark', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) {
+      out.innerHTML = `<span style="color:var(--red)">${d.error}</span>`;
+    } else {
+      out.innerHTML = renderBench(d);
+    }
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--red)">${e}</span>`;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Run benchmark';
+}
+
+function benchRow(label, val, highlight) {
+  const v = (val == null) ? '—' : `${val} ms`;
+  return `<tr><td style="color:var(--muted)">${label}</td>
+    <td style="font-weight:600;${highlight ? 'color:var(--green)' : ''}">${v}</td></tr>`;
+}
+
+function renderBench(d) {
+  let h = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+    ${d.frames} frames · ${d.resolution} · ${d.faces_detected} had a real face</div>
+    <table class="bench-table">`;
+  h += benchRow('buffalo_sc (full pipeline)', d.buffalo_ms);
+  if (d.sface_ready) {
+    h += benchRow('SFace detect @ full-res', d.sface_detect_fullres_ms);
+    h += benchRow('SFace detect @ 320', d.sface_detect_320_ms);
+    h += benchRow('SFace feature (embed)', d.sface_feature_ms);
+    h += benchRow('SFace total @ full-res', d.sface_total_fullres_ms, true);
+    h += benchRow('SFace total @ 320 (downscaled)', d.sface_total_320_ms, true);
+  } else {
+    h += `<tr><td colspan="2" style="color:var(--amber)">SFace not loaded</td></tr>`;
+  }
+  h += '</table>';
+  return h;
 }
 
 let calibChart = null;
@@ -569,6 +630,8 @@ async function delFace(name) {
   if (d.success) document.getElementById('fc-' + CSS.escape(name))?.remove();
 }
 
+document.getElementById('bench-btn').addEventListener('click', runBenchmark);
+
 loadEvents();
 setInterval(loadEvents, 10000);
 </script>
@@ -656,6 +719,15 @@ async def get_calibration():
     if _blur_calibration is None:
         return {}
     return _blur_calibration.summary()
+
+
+@app.post("/api/benchmark")
+def run_benchmark():
+    # sync def → FastAPI runs this in a threadpool, so the blocking ~10s
+    # benchmark doesn't stall the event loop / other requests.
+    if _face_recognizer is None:
+        return {'error': 'no recognizer'}
+    return _face_recognizer.benchmark()
 
 
 @app.get("/snapshots/{filename}")
