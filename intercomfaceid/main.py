@@ -5,33 +5,9 @@ from blur_calibration import BlurCalibration
 import web_server
 import mqtt_handler
 import arduino_handler
-import os
 import time
 import logging
 import sys
-import subprocess
-import threading
-
-GO2RTC_BIN = '/usr/local/bin/go2rtc'
-GO2RTC_CONFIG = '/usr/src/app/go2rtc.yaml'
-
-
-def _run_go2rtc():
-    """Run go2rtc as a supervised subprocess — auto-restart if it ever exits, so
-    the camera stream self-heals."""
-    if not os.path.exists(GO2RTC_BIN):
-        logging.warning('go2rtc binary not found; camera restreamer disabled.')
-        return
-    while True:
-        try:
-            logging.info('Starting go2rtc...')
-            proc = subprocess.Popen([GO2RTC_BIN, '-config', GO2RTC_CONFIG])
-            proc.wait()
-            logging.error(f'go2rtc exited (code {proc.returncode}); restarting in 5s')
-        except Exception as e:
-            logging.error(f'go2rtc launch error: {e}; retrying in 5s')
-        time.sleep(5)
-
 
 # Hex codes that appear on the bus but are NOT a doorbell press (periodic noise
 # / heartbeat). These are still logged as serial commands for tracking, but do
@@ -51,9 +27,6 @@ def _signal_code(command):
 def main():
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # Start the bundled camera restreamer (supervised, auto-restarting).
-    threading.Thread(target=_run_go2rtc, daemon=True).start()
-
     enable_face_recognition = True
     enable_mqtt = True
     enable_arduino = True
@@ -66,8 +39,7 @@ def main():
     mqtt_client = None
 
     if enable_face_recognition:
-        # Read frames from motionEye (reliable USB capture). go2rtc transcodes the
-        # same motionEye feed to H264 for the browser/HomeKit live view.
+        # Read frames on demand from motionEye's MJPEG stream (the USB capturer).
         stream_manager = StreamManager("http://homeassistant.local:9081", autostart=False)
         face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
                                          blur_calibration=blur_calibration)
