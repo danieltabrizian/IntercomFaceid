@@ -267,6 +267,7 @@ class FaceRecognizer:
         forced_processed = 0    # below threshold but processed anyway (failsafe)
         auto_processed = 0      # at/above threshold
         skipped_blurry = 0      # below threshold AND failsafe didn't fire
+        no_face_frames = 0      # frames where YuNet found no face
         last_processed = start_time
         match = None
 
@@ -287,14 +288,19 @@ class FaceRecognizer:
                 fps_timer = now
 
             elapsed = now - start_time
-            in_fast = elapsed < FAST_PHASE_SECONDS and self._sface_ready and n_sface > 0
-            in_heavy = elapsed >= FAST_PHASE_SECONDS and n_heavy > 0
+            # Fast phase only applies if there are migrated SFace faces to compare against.
+            in_fast = self._sface_ready and n_sface > 0 and elapsed < FAST_PHASE_SECONDS
+            # Heavy runs whenever fast isn't running and there are buffalo_sc faces —
+            # crucially including from t=0 when no SFace faces exist yet, otherwise the
+            # first FAST_PHASE_SECONDS would be wasted idling.
+            in_heavy = (not in_fast) and n_heavy > 0
 
-            # If the heavy phase has nothing to compare against (everyone migrated),
-            # there's no point spinning the rest of the window.
-            if elapsed >= FAST_PHASE_SECONDS and n_heavy == 0:
-                break
             if not in_fast and not in_heavy:
+                # Nothing can match in the current phase. If nothing will ever match
+                # (no heavy faces, and fast window is over or there are no sface faces),
+                # stop early instead of spinning the rest of the window.
+                if n_heavy == 0 and (n_sface == 0 or elapsed >= FAST_PHASE_SECONDS):
+                    break
                 continue
 
             # If SFace models aren't available we can't run the YuNet-based blur gate;
@@ -322,6 +328,7 @@ class FaceRecognizer:
                 logging.error(f'Detection error: {e}')
                 continue
             if faces is None:
+                no_face_frames += 1
                 continue  # no face in frame
 
             is_blurry = sharpness < BLUR_THRESHOLD
@@ -369,6 +376,7 @@ class FaceRecognizer:
             'forced_processed': forced_processed,
             'auto_processed': auto_processed,
             'skipped_blurry': skipped_blurry,
+            'no_face_frames': no_face_frames,
             'duration_s':   duration_s,
         }
 
@@ -386,7 +394,7 @@ class FaceRecognizer:
                 f'[{match["model"]}] {match["name"]} {match["similarity"]*100:.1f}% — '
                 f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
                 f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
-                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry})'
+                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry}, no_face {no_face_frames})'
             )
             if self.event_logger is not None:
                 self.event_logger.log('face_recognized',
@@ -407,7 +415,7 @@ class FaceRecognizer:
                 f'No face matched — '
                 f'sface {timing["fast_avg_ms"]}ms×{fast_frames}f  '
                 f'heavy {timing["heavy_avg_ms"]}ms×{heavy_frames}f  '
-                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry})'
+                f'(forced {forced_processed}, auto {auto_processed}, skipped {skipped_blurry}, no_face {no_face_frames})'
             )
             if self.event_logger is not None:
                 self.event_logger.log('face_denied',

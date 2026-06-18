@@ -309,6 +309,7 @@ function evHtml(e) {
     if (e.heavy_frames)   parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
     if (e.forced_processed) parts.push(`🎯 ${e.forced_processed} forced`);
     if (e.skipped_blurry)   parts.push(`🌫 ${e.skipped_blurry} skipped`);
+    if (e.no_face_frames)   parts.push(`👻 ${e.no_face_frames} no-face`);
     if (e.duration_s)     parts.push(`${e.duration_s}s`);
     return parts.length
       ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${parts.join(' &nbsp;·&nbsp; ')}</div>`
