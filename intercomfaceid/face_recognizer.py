@@ -133,16 +133,30 @@ class FaceRecognizer:
 
     # --------------------------------------------------------- recognition
 
-    def captureFace(self, capture_time=30):
+    def captureFace(self, capture_time=30, run_recognition=True):
         if not self.stream_manager.is_capturing:
             logging.info('Starting video stream...')
             if not self.stream_manager.start_video_stream():
                 logging.error('Failed to start video stream.')
                 return
 
-        start_time = time.time()
+        ret, frame = self.stream_manager.get_frame()
+        if not ret:
+            logging.warning('Could not grab frame for snapshot.')
+            return
+
+        # Always save a snapshot for the activity log
         snapshot_filename = None
-        frame_buffer = []       # rolling buffer — reused for migration
+        if self.event_logger is not None:
+            snapshot_filename = self.event_logger.save_snapshot(frame, prefix='bell')
+            self.event_logger.log('bell_ring', snapshot=snapshot_filename)
+
+        if not run_recognition:
+            return
+
+        # Recognition loop — runs for up to capture_time seconds
+        start_time = time.time()
+        frame_buffer = [frame]
         frame_counter = 0
         fps_timer = time.time()
 
@@ -150,10 +164,6 @@ class FaceRecognizer:
             ret, frame = self.stream_manager.get_frame()
             if not ret:
                 continue
-
-            if snapshot_filename is None and self.event_logger is not None:
-                snapshot_filename = self.event_logger.save_snapshot(frame, prefix='bell')
-                self.event_logger.log('bell_ring', snapshot=snapshot_filename)
 
             frame_buffer.append(frame)
             if len(frame_buffer) > 40:

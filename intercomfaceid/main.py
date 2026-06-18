@@ -49,10 +49,11 @@ def main():
             # Trigger face capture on any intercom signal:
             # - "call:XXXXXX" format from TCS bus
             # - "Received HEX: XXXXXX" format from Arduino sketch
-            is_bell = command.startswith("call:") or command.startswith("Received HEX:")
-            if is_bell:
+            is_any_signal = command.startswith("call:") or command.startswith("Received HEX:")
+            is_door_bell  = command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F")
+            if is_any_signal:
                 logging.info(f"Received call command: {command}")
-                if enable_mqtt:
+                if enable_mqtt and is_door_bell:
                     try:
                         mqtt_client.publish_bell_state()
                     except Exception as e:
@@ -60,9 +61,9 @@ def main():
 
                 if enable_face_recognition:
                     try:
-                        face_recognizer.captureFace()
+                        face_recognizer.captureFace(run_recognition=is_door_bell)
                     except Exception as e:
-                        logging.error(f"Error recognizing face: {e}")
+                        logging.error(f"Error during face capture: {e}")
 
             elif command == "unlock":
                 logging.info("Received unlock command")
