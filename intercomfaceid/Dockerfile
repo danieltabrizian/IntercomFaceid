@@ -1,4 +1,7 @@
-FROM python:3.9-slim
+# Pinned to bookworm: its Intel NEO OpenCL driver still supports Gemini Lake
+# (Gen9.5). trixie ships a newer NEO that dropped legacy-platform support, and
+# its 'main' component no longer carries intel-opencl-icd.
+FROM python:3.9-slim-bookworm
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -13,10 +16,15 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     wget \
-    intel-opencl-icd \
-    ocl-icd-libopencl1 \
-    clinfo \
     && apt-get clean
+
+# Intel iGPU OpenCL runtime (NEO) for the experimental OpenVINO GPU benchmark.
+# intel-opencl-icd lives in the non-free component, so enable it first.
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" \
+      > /etc/apt/sources.list.d/nonfree.list && \
+    apt-get update && \
+    apt-get install -y intel-opencl-icd ocl-icd-libopencl1 clinfo && \
+    apt-get clean
 
 RUN pip install --upgrade pip
 
