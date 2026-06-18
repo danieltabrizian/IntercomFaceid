@@ -35,6 +35,12 @@ RUN pip install --no-cache-dir insightface onnxruntime opencv-python paho-mqtt p
 # replace onnxruntime, so production CPU recognition is unaffected).
 RUN pip install --no-cache-dir "openvino==2024.6.0"
 
+# Documented workaround for OpenVINO GPU "ProgramBuilder build failed" on
+# Gemini Lake / Gen9.5 (clWaitForEvents -14): enable NEO debug keys + force a
+# 48-bit GPU address space.
+ENV NEOReadDebugKeys=1 \
+    OverrideGpuAddressSpace=48
+
 WORKDIR /usr/src/app
 COPY . .
 
