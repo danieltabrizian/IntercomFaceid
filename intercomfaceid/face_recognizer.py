@@ -12,8 +12,9 @@ SFACE_DETECTOR_PATH = '/models/yunet.onnx'
 SFACE_RECOGNIZER_PATH = '/models/sface.onnx'
 
 FAST_PHASE_SECONDS = 10
-FAST_THRESHOLD = 0.38    # SFace cosine similarity (0–1)
+FAST_THRESHOLD  = 0.38   # SFace cosine similarity (0–1)
 HEAVY_THRESHOLD = 0.50   # buffalo_sc cosine similarity (0–1)
+BLUR_THRESHOLD  = 80.0   # Laplacian variance; below this → skip frame as too blurry
 
 
 class FaceRecognizer:
@@ -79,6 +80,12 @@ class FaceRecognizer:
 
     def _heavy_sim(self, e1, e2):
         return float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2)))
+
+    def _frame_sharpness(self, frame):
+        """Laplacian variance on a 160×120 grayscale thumbnail. ~0.5ms."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (160, 120))
+        return float(cv2.Laplacian(small, cv2.CV_64F).var())
 
     # used externally by old callers (learn_new_face dedup check)
     def cosine_similarity(self, e1, e2):
@@ -162,6 +169,7 @@ class FaceRecognizer:
         fps_timer = time.time()
         fast_ms, fast_frames = 0.0, 0
         heavy_ms, heavy_frames = 0.0, 0
+        blurry_skipped = 0
         match = None
 
         while time.time() - start_time < capture_time:
@@ -169,6 +177,7 @@ class FaceRecognizer:
             if not ret:
                 continue
 
+            # Always buffer frames (even blurry ones are useful for migration)
             frame_buffer.append(frame)
             if len(frame_buffer) > 80:
                 frame_buffer.pop(0)
@@ -181,18 +190,28 @@ class FaceRecognizer:
                 fps_timer = now
 
             elapsed = now - start_time
+            in_fast_phase = elapsed < FAST_PHASE_SECONDS and self._sface_ready
+            in_heavy_phase = elapsed >= FAST_PHASE_SECONDS
+            if not in_fast_phase and not in_heavy_phase:
+                continue
+
+            # Sharpness gate — skip blurry frames before expensive embedding
+            sharpness = self._frame_sharpness(frame)
+            if sharpness < BLUR_THRESHOLD:
+                blurry_skipped += 1
+                logging.debug(f'Blurry frame skipped (sharpness={sharpness:.1f})')
+                continue
+
             try:
                 t0 = time.time()
-                if elapsed < FAST_PHASE_SECONDS and self._sface_ready:
+                if in_fast_phase:
                     match = self._try_fast(frame)
                     fast_ms += (time.time() - t0) * 1000
                     fast_frames += 1
-                elif elapsed >= FAST_PHASE_SECONDS:
+                else:
                     match = self._try_heavy(frame, list(frame_buffer))
                     heavy_ms += (time.time() - t0) * 1000
                     heavy_frames += 1
-                else:
-                    continue
             except Exception as e:
                 logging.error(f'Recognition error: {e}')
                 continue
@@ -206,6 +225,7 @@ class FaceRecognizer:
             'fast_frames':    fast_frames,
             'heavy_avg_ms':   round(heavy_ms / heavy_frames, 1) if heavy_frames else None,
             'heavy_frames':   heavy_frames,
+            'blurry_skipped': blurry_skipped,
             'duration_s':     duration_s,
         }
 

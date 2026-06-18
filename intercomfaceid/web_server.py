@@ -296,9 +296,10 @@ function evHtml(e) {
     : `<div class="ev-icon">${ICON[e.type]||'•'}</div>`;
   function timingHtml(e) {
     const parts = [];
-    if (e.fast_frames)  parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
-    if (e.heavy_frames) parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
-    if (e.duration_s)   parts.push(`${e.duration_s}s`);
+    if (e.fast_frames)    parts.push(`⚡ ${e.fast_avg_ms}ms/f × ${e.fast_frames}f`);
+    if (e.heavy_frames)   parts.push(`🔵 ${e.heavy_avg_ms}ms/f × ${e.heavy_frames}f`);
+    if (e.blurry_skipped) parts.push(`🌫 ${e.blurry_skipped} blurry`);
+    if (e.duration_s)     parts.push(`${e.duration_s}s`);
     return parts.length
       ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${parts.join(' &nbsp;·&nbsp; ')}</div>`
       : '';
