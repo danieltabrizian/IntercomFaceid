@@ -24,7 +24,12 @@ ffmpeg:
   bin: ffmpeg
 
 streams:
-  webcam: ffmpeg:http://192.168.2.45:9081
+  # Track 1: native MJPEG passthrough (cheap — used by the Face ID recognizer).
+  # Track 2: H264 transcode of the same stream (for HA stream/WebRTC/HLS/HomeKit).
+  # The H264 transcode only runs when an H264 consumer is connected (on-demand).
+  webcam:
+    - ffmpeg:http://192.168.2.45:9081
+    - ffmpeg:webcam#video=h264
 
 log:
   level: info
