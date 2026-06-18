@@ -9,6 +9,21 @@ import time
 import logging
 import sys
 
+# Hex codes that appear on the bus but are NOT a doorbell press (periodic noise
+# / heartbeat). These are still logged as serial commands for tracking, but do
+# not trigger a snapshot, a bell_ring, or face recognition.
+IGNORED_CODES = {"2400"}
+
+
+def _signal_code(command):
+    """Extract the code portion of a 'call:XXXX' / 'Received HEX: XXXX' line."""
+    if command.startswith("call:"):
+        return command[len("call:"):].strip()
+    if command.startswith("Received HEX:"):
+        return command[len("Received HEX:"):].strip()
+    return None
+
+
 def main():
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,7 +43,8 @@ def main():
         face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
                                          blur_calibration=blur_calibration)
     if enable_arduino:
-        arduino = arduino_handler.ArduinoHandler(event_logger=event_logger)
+        arduino = arduino_handler.ArduinoHandler(event_logger=event_logger,
+                                                 ignored_codes=IGNORED_CODES)
     if enable_mqtt:
         mqtt_client = mqtt_handler.MQTTHandler()
 
@@ -53,8 +69,9 @@ def main():
             # Trigger face capture on any intercom signal:
             # - "call:XXXXXX" format from TCS bus
             # - "Received HEX: XXXXXX" format from Arduino sketch
-            is_any_signal = command.startswith("call:") or command.startswith("Received HEX:")
-            is_door_bell  = command.startswith("call:OC594F") or command.startswith("Received HEX: 0C594F")
+            code = _signal_code(command)
+            is_any_signal = code is not None and code not in IGNORED_CODES
+            is_door_bell  = code in ("OC594F", "0C594F")
             if is_any_signal:
                 logging.info(f"Received call command: {command}")
                 if enable_mqtt and is_door_bell:

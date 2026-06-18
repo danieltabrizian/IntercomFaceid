@@ -7,7 +7,8 @@ import sys
 import threading
 
 class ArduinoHandler:
-    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, retry_delay=5, event_logger=None):
+    def __init__(self, port='/dev/ttyUSB0', baudrate=9600, retry_delay=5, event_logger=None,
+                 ignored_codes=None):
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
         config = self.load_config()
@@ -22,6 +23,8 @@ class ArduinoHandler:
         self.ser = None
         self.mqtt_client = None
         self.event_logger = event_logger
+        # Codes that are periodic bus noise — not logged at all.
+        self.ignored_codes = set(ignored_codes or [])
         self._lock = threading.Lock()
         self._last_activity = time.time()
         self._reconnecting = False
@@ -95,6 +98,12 @@ class ArduinoHandler:
     def set_mqtt_client(self, mqtt_client):
         self.mqtt_client = mqtt_client
 
+    def _code(self, line):
+        for prefix in ("call:", "Received HEX:"):
+            if line.startswith(prefix):
+                return line[len(prefix):].strip()
+        return None
+
     def read_command(self):
         with self._lock:
             ser = self.ser
@@ -104,6 +113,9 @@ class ArduinoHandler:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8').strip()
                 self._last_activity = time.time()
+                # Drop periodic bus-noise codes entirely (no log, no return)
+                if self._code(line) in self.ignored_codes:
+                    return ""
                 if line and self.event_logger is not None:
                     if line.lower() == 'unlock':
                         self.event_logger.log('door_unlocked')
