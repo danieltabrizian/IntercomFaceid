@@ -178,14 +178,31 @@ class FaceRecognizer:
     # --------------------------------------------------------- recognition
 
     def captureFace(self, capture_time=30, run_recognition=True):
-        if not self.stream_manager.is_capturing:
+        """Start the stream on demand, capture, then stop it again so the add-on
+        consumes no CPU decoding frames while idle."""
+        started_here = not self.stream_manager.is_capturing
+        if started_here:
             logging.info('Starting video stream...')
             if not self.stream_manager.start_video_stream():
                 logging.error('Failed to start video stream.')
                 return
+        try:
+            self._do_capture(capture_time, run_recognition)
+        finally:
+            if started_here:
+                self.stream_manager.stop_video_stream()
 
-        ret, frame = self.stream_manager.get_frame()
-        if not ret:
+    def _do_capture(self, capture_time, run_recognition):
+        # Cold start: wait briefly for the first decoded frame after (re)connecting.
+        frame = None
+        wait_until = time.time() + 4
+        while time.time() < wait_until:
+            ret, f = self.stream_manager.get_frame()
+            if ret:
+                frame = f
+                break
+            time.sleep(0.05)
+        if frame is None:
             logging.warning('Could not grab frame for snapshot.')
             return
 
@@ -398,15 +415,22 @@ class FaceRecognizer:
     # ------------------------------------------------------- enrollment
 
     def learn_new_face(self, person_name=None):
+        started_here = not self.stream_manager.is_capturing
+        if started_here:
+            if not self.stream_manager.start_video_stream():
+                logging.error('Failed to start video stream.')
+                return
+        try:
+            self._do_learn(person_name)
+        finally:
+            if started_here:
+                self.stream_manager.stop_video_stream()
+
+    def _do_learn(self, person_name=None):
         if person_name is None:
             person_name = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
         logging.info(f'Learning {person_name}...')
-
-        if not self.stream_manager.is_capturing:
-            if not self.stream_manager.start_video_stream():
-                logging.error('Failed to start video stream.')
-                return
 
         start_time = time.time()
         session_embeddings = []

@@ -8,7 +8,7 @@ from requests.exceptions import RequestException
 import queue
 
 class StreamManager:
-    def __init__(self, stream_url, max_retry_attempts=3, retry_delay=5, target_fps=7):
+    def __init__(self, stream_url, max_retry_attempts=3, retry_delay=5, target_fps=7, autostart=True):
         self.stream_url = stream_url
         self.current_frame = None
         self.last_frame_time = 0
@@ -24,8 +24,11 @@ class StreamManager:
         self.target_fps = target_fps
         self.frame_interval = 1.0 / self.target_fps  # Time per frame (in seconds)
 
-        # Start the stream immediately upon initialization
-        self.start_video_stream()
+        # Start the stream immediately only if requested. On-demand mode
+        # (autostart=False) leaves it stopped so the add-on burns no CPU
+        # decoding frames while idle; captureFace/learn start it as needed.
+        if autostart:
+            self.start_video_stream()
         self.start_watchdog()
 
     def start_video_stream(self):

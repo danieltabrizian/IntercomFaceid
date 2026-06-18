@@ -39,7 +39,7 @@ def main():
     mqtt_client = None
 
     if enable_face_recognition:
-        stream_manager = StreamManager("http://homeassistant.local:9081")
+        stream_manager = StreamManager("http://homeassistant.local:9081", autostart=False)
         face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
                                          blur_calibration=blur_calibration)
     if enable_arduino:
