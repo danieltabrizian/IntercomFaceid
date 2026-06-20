@@ -15,13 +15,12 @@ import sys
 # DOORBELL_CODES: the code(s) that mean "someone is ringing THIS door" — the only
 # ones that should trigger a snapshot + face recognition. Filled in once we
 # identify it from the (now decluttered) activity log. Empty = recognition idle.
-DOORBELL_CODES = set()
-
-# TEMPORARY: recognize on EVERY real-bell (>4-digit) code, not just DOORBELL_CODES.
-# Lets a downstairs ring fire recognition before we know the exact doorbell code —
-# the ring's code shows up in the log so we can capture it. Set back to False once
-# DOORBELL_CODES is populated with the real code.
-RECOGNIZE_ALL_SIGNALS = True
+# The doorbell button on THIS unit sends 'call:0C594F80'. That's the only code
+# that should trigger a snapshot + recognition. Everything else on the bus —
+# other units' calls, and the unlock echo 1C594F80 the intercom emits when the
+# door opens — is ignored (ignoring the echo prevents an unlock->recognize->unlock
+# feedback loop).
+DOORBELL_CODES = {"0C594F80"}
 
 
 def _signal_code(command):
@@ -80,26 +79,23 @@ def main():
             command = arduino.read_command()  # 4-digit noise already dropped upstream
             code = _signal_code(command)
             if code is not None:
-                # Any real bell (>4-digit code, since noise is dropped upstream) gets
-                # a snapshot. Face recognition + bell state fire only for the known
-                # doorbell code(s).
-                is_door_bell = code in DOORBELL_CODES
-                run_reco = is_door_bell or RECOGNIZE_ALL_SIGNALS
-                tag = " [test-recognize]" if (run_reco and not is_door_bell) else ""
-                logging.info(f"{'Doorbell' if is_door_bell else 'Signal'}: {command}{tag}")
-                if enable_mqtt and is_door_bell:
-                    try:
-                        mqtt_client.publish_bell_state()
-                    except Exception as e:
-                        logging.error(f"Error publishing bell state: {e}")
-                if enable_face_recognition:
-                    try:
-                        # Real doorbell gets the full 30s window; test-mode runs on
-                        # other signals use a shorter window so the loop frees up fast.
-                        cap = 30 if is_door_bell else 15
-                        face_recognizer.captureFace(capture_time=cap, run_recognition=run_reco)
-                    except Exception as e:
-                        logging.error(f"Error during face capture: {e}")
+                # Only our doorbell triggers a snapshot + recognition. Everything
+                # else on the bus (other units' calls, the 1C594F80 unlock echo) is
+                # ignored — which also prevents the unlock->recognize->unlock loop.
+                if code in DOORBELL_CODES:
+                    logging.info(f"Doorbell: {command}")
+                    if enable_mqtt:
+                        try:
+                            mqtt_client.publish_bell_state()
+                        except Exception as e:
+                            logging.error(f"Error publishing bell state: {e}")
+                    if enable_face_recognition:
+                        try:
+                            face_recognizer.captureFace(run_recognition=True)
+                        except Exception as e:
+                            logging.error(f"Error during face capture: {e}")
+                else:
+                    logging.debug(f"Ignored signal: {command}")
             elif command == "unlock":
                 logging.info("Received unlock command")
 
