@@ -70,7 +70,7 @@ class StreamManager:
 
         while self.is_capturing:
             try:
-                chunk = self.stream.raw.read(1024)
+                chunk = self.stream.raw.read(16384)
                 if not chunk:
                     raise Exception("No data received from stream.")
                 bytes_buffer += chunk

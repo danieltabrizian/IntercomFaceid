@@ -43,7 +43,10 @@ def main():
 
     if enable_face_recognition:
         # Read frames on demand from motionEye's MJPEG stream (the USB capturer).
-        stream_manager = StreamManager("http://homeassistant.local:9081", autostart=False)
+        # Use the host IP, NOT homeassistant.local — resolving the .local name
+        # inside the add-on container hits a ~10s unicast-DNS timeout before
+        # falling back to mDNS, which dominated the bell→recognition latency.
+        stream_manager = StreamManager("http://192.168.2.45:9081", autostart=False)
         face_recognizer = FaceRecognizer(stream_manager, event_logger=event_logger,
                                          blur_calibration=blur_calibration)
     if enable_arduino:
