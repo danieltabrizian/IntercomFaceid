@@ -71,19 +71,21 @@ def main():
             command = arduino.read_command()  # 4-digit noise already dropped upstream
             code = _signal_code(command)
             if code is not None:
-                # Only the real doorbell triggers a snapshot + recognition.
-                if code in DOORBELL_CODES:
-                    logging.info(f"Doorbell: {command}")
-                    if enable_mqtt:
-                        try:
-                            mqtt_client.publish_bell_state()
-                        except Exception as e:
-                            logging.error(f"Error publishing bell state: {e}")
-                    if enable_face_recognition:
-                        try:
-                            face_recognizer.captureFace(run_recognition=True)
-                        except Exception as e:
-                            logging.error(f"Error during face capture: {e}")
+                # Any real bell (>4-digit code, since noise is dropped upstream) gets
+                # a snapshot. Face recognition + bell state fire only for the known
+                # doorbell code(s).
+                is_door_bell = code in DOORBELL_CODES
+                logging.info(f"{'Doorbell' if is_door_bell else 'Signal'}: {command}")
+                if enable_mqtt and is_door_bell:
+                    try:
+                        mqtt_client.publish_bell_state()
+                    except Exception as e:
+                        logging.error(f"Error publishing bell state: {e}")
+                if enable_face_recognition:
+                    try:
+                        face_recognizer.captureFace(run_recognition=is_door_bell)
+                    except Exception as e:
+                        logging.error(f"Error during face capture: {e}")
             elif command == "unlock":
                 logging.info("Received unlock command")
 
