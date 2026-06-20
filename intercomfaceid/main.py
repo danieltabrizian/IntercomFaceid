@@ -17,6 +17,12 @@ import sys
 # identify it from the (now decluttered) activity log. Empty = recognition idle.
 DOORBELL_CODES = set()
 
+# TEMPORARY: recognize on EVERY real-bell (>4-digit) code, not just DOORBELL_CODES.
+# Lets a downstairs ring fire recognition before we know the exact doorbell code —
+# the ring's code shows up in the log so we can capture it. Set back to False once
+# DOORBELL_CODES is populated with the real code.
+RECOGNIZE_ALL_SIGNALS = True
+
 
 def _signal_code(command):
     """Extract the code portion of a 'call:XXXX' / 'Received HEX: XXXX' line."""
@@ -78,7 +84,9 @@ def main():
                 # a snapshot. Face recognition + bell state fire only for the known
                 # doorbell code(s).
                 is_door_bell = code in DOORBELL_CODES
-                logging.info(f"{'Doorbell' if is_door_bell else 'Signal'}: {command}")
+                run_reco = is_door_bell or RECOGNIZE_ALL_SIGNALS
+                tag = " [test-recognize]" if (run_reco and not is_door_bell) else ""
+                logging.info(f"{'Doorbell' if is_door_bell else 'Signal'}: {command}{tag}")
                 if enable_mqtt and is_door_bell:
                     try:
                         mqtt_client.publish_bell_state()
@@ -86,7 +94,10 @@ def main():
                         logging.error(f"Error publishing bell state: {e}")
                 if enable_face_recognition:
                     try:
-                        face_recognizer.captureFace(run_recognition=is_door_bell)
+                        # Real doorbell gets the full 30s window; test-mode runs on
+                        # other signals use a shorter window so the loop frees up fast.
+                        cap = 30 if is_door_bell else 15
+                        face_recognizer.captureFace(capture_time=cap, run_recognition=run_reco)
                     except Exception as e:
                         logging.error(f"Error during face capture: {e}")
             elif command == "unlock":
