@@ -113,8 +113,12 @@ class ArduinoHandler:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8').strip()
                 self._last_activity = time.time()
-                # Drop periodic bus-noise codes entirely (no log, no return)
-                if self._code(line) in self.ignored_codes:
+                # Drop short (<=4 hex digit) codes entirely — they're bus heartbeat
+                # / noise (2480, 1180, 3080, 2400, ...). No log, no return.
+                c = self._code(line)
+                if c is not None and len(c) <= 4:
+                    return ""
+                if c is not None and c in self.ignored_codes:
                     return ""
                 if line and self.event_logger is not None:
                     if line.lower() == 'unlock':

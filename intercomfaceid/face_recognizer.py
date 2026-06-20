@@ -234,12 +234,7 @@ class FaceRecognizer:
         fps_timer = time.time()
         detect_ms, detect_frames = 0.0, 0
         embed_ms, embed_frames = 0.0, 0
-        samples = []            # (sharpness, matched) for embedded frames
-        forced_processed = 0    # embedded despite being below blur threshold (failsafe)
-        auto_processed = 0      # embedded because at/above threshold
-        skipped_blurry = 0      # below threshold AND failsafe didn't fire
         no_face_frames = 0      # frames where SCRFD found no face
-        last_embedded = start_time
         match = None
 
         while time.time() - start_time < capture_time:
@@ -254,7 +249,7 @@ class FaceRecognizer:
                 fps_counter = 0
                 fps_timer = now
 
-            # --- Detection (cheap, every frame) ---
+            # --- Detection (every frame) ---
             try:
                 t0 = time.time()
                 det = self._detect(frame)
@@ -267,19 +262,8 @@ class FaceRecognizer:
                 no_face_frames += 1
                 continue
             bbox, kps = det
-            sharpness = self._crop_sharpness(frame, bbox)
 
-            # --- Blur gate (decides whether to pay for the embedding) ---
-            forced = False
-            if sharpness < BLUR_THRESHOLD:
-                if (now - last_embedded) * 1000 >= FORCE_AFTER_MS:
-                    forced = True   # failsafe: don't starve recognition
-                else:
-                    skipped_blurry += 1
-                    continue
-
-            # --- Embedding (expensive, sharp frames only) ---
-            last_embedded = now
+            # --- Embedding + match (no blur gate — simple and reliable) ---
             try:
                 t0 = time.time()
                 emb = self._embed(frame, kps)
@@ -290,15 +274,9 @@ class FaceRecognizer:
                 logging.error(f'Embedding error: {e}')
                 continue
 
-            samples.append((sharpness, bool(match)))
-            if forced:
-                forced_processed += 1
-            else:
-                auto_processed += 1
-
             if match:
                 # Auto-refresh the person's gallery with this fresh face crop.
-                if self.event_logger is not None and sharpness >= BLUR_THRESHOLD:
+                if self.event_logger is not None:
                     try:
                         crop = self._face_crop_img(frame, bbox)
                         if crop is not None:
@@ -313,25 +291,12 @@ class FaceRecognizer:
             'detect_frames': detect_frames,
             'embed_avg_ms':  round(embed_ms / embed_frames, 1) if embed_frames else None,
             'embed_frames':  embed_frames,
-            'forced_processed': forced_processed,
-            'auto_processed': auto_processed,
-            'skipped_blurry': skipped_blurry,
             'no_face_frames': no_face_frames,
             'duration_s':   duration_s,
         }
 
-        if self.blur_calibration is not None:
-            try:
-                self.blur_calibration.record_batch(
-                    samples, forced_processed, auto_processed, skipped_blurry,
-                    blur_threshold=BLUR_THRESHOLD, force_after_ms=FORCE_AFTER_MS)
-            except Exception as e:
-                logging.error(f'Failed to record blur calibration: {e}')
-
         summary = (f'detect {timing["detect_avg_ms"]}ms×{detect_frames}f  '
-                   f'embed {timing["embed_avg_ms"]}ms×{embed_frames}f  '
-                   f'(forced {forced_processed}, auto {auto_processed}, '
-                   f'skipped {skipped_blurry}, no_face {no_face_frames})')
+                   f'embed {timing["embed_avg_ms"]}ms×{embed_frames}f  (no_face {no_face_frames})')
 
         if match:
             logging.info(f'Recognized {match["name"]} {match["similarity"]*100:.1f}% — {summary}')
