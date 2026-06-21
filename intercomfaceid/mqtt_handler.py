@@ -77,7 +77,9 @@ class MQTTHandler:
         print(f"Message {mid} published successfully")
 
     def publish_bell_state(self):
-        result = self.mqtt_client.publish(self.bell_state_topic + "/state", "single")
+        # retain=False is critical: a retained "single" would be replayed to HA
+        # on every (re)subscribe (add-on/HA restart), firing a phantom doorbell.
+        result = self.mqtt_client.publish(self.bell_state_topic + "/state", "single", retain=False)
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             print(f"Published bell state")
         else:
@@ -85,7 +87,13 @@ class MQTTHandler:
 
     def broadcast_device_types(self):
         print("Broadcasting device types...")
-        
+
+        # Clear any stale retained doorbell state BEFORE (re)publishing the trigger
+        # config. Otherwise a leftover retained "single" gets replayed to HA when it
+        # re-subscribes on startup, pushing a phantom "someone's at the intercom".
+        self.mqtt_client.publish(self.bell_state_topic + "/state", payload=None, retain=True)
+
+
         devices = [
             {
                 "name": "Learn New Face",
