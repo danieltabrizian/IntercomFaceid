@@ -10,6 +10,8 @@ import logging
 import cv2
 
 MATCH_THRESHOLD = 0.50   # buffalo_sc cosine similarity to accept a match (0–1)
+REQUIRED_MATCHES = 2     # consecutive live frames that must match the SAME person
+                         # before unlocking — guards against single-frame false hits
 DEDUP_THRESHOLD = 0.70   # during enrollment, skip embeddings more similar than this
 BLUR_THRESHOLD  = 80.0   # Laplacian variance on the face crop; below this = "blurry".
                          # Gates the EXPENSIVE embedding step — detection still runs.
@@ -235,7 +237,9 @@ class FaceRecognizer:
         detect_ms, detect_frames = 0.0, 0
         embed_ms, embed_frames = 0.0, 0
         no_face_frames = 0      # frames where SCRFD found no face
-        match = None
+        match = None            # set only once a match is CONFIRMED (see below)
+        pending_name = None     # person matched on the previous frame
+        streak = 0              # consecutive frames matching pending_name
 
         while time.time() - start_time < capture_time:
             ret, frame = self.stream_manager.get_frame()
@@ -260,6 +264,8 @@ class FaceRecognizer:
                 continue
             if det is None:
                 no_face_frames += 1
+                pending_name = None   # a no-face frame breaks the streak
+                streak = 0
                 continue
             bbox, kps = det
 
@@ -269,21 +275,33 @@ class FaceRecognizer:
                 emb = self._embed(frame, kps)
                 embed_ms += (time.time() - t0) * 1000
                 embed_frames += 1
-                match = self._match(emb)
+                m = self._match(emb)
             except Exception as e:
                 logging.error(f'Embedding error: {e}')
                 continue
 
-            if match:
-                # Auto-refresh the person's gallery with this fresh face crop.
-                if self.event_logger is not None:
-                    try:
-                        crop = self._face_crop_img(frame, bbox)
-                        if crop is not None:
-                            self.event_logger.add_face_image(crop, match['name'])
-                    except Exception as e:
-                        logging.debug(f'gallery update failed: {e}')
-                break
+            # Require REQUIRED_MATCHES consecutive frames of the SAME person before
+            # accepting — a single-frame fluke can't unlock the door.
+            if m:
+                if m['name'] == pending_name:
+                    streak += 1
+                else:
+                    pending_name = m['name']
+                    streak = 1
+                if streak >= REQUIRED_MATCHES:
+                    match = m
+                    # Auto-refresh the person's gallery with this fresh face crop.
+                    if self.event_logger is not None:
+                        try:
+                            crop = self._face_crop_img(frame, bbox)
+                            if crop is not None:
+                                self.event_logger.add_face_image(crop, match['name'])
+                        except Exception as e:
+                            logging.debug(f'gallery update failed: {e}')
+                    break
+            else:
+                pending_name = None   # a non-matching face breaks the streak
+                streak = 0
 
         duration_s = round(time.time() - start_time, 1)
         timing = {
