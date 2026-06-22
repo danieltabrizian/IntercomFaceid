@@ -39,7 +39,16 @@ class StreamManager:
                         self.stream = requests.get(self.stream_url, stream=True, timeout=10)
                         if self.stream.status_code != 200:
                             raise Exception(f"Failed to connect to stream. Status code: {self.stream.status_code}")
-                        
+
+                        # CRITICAL: discard any frames left over from a previous
+                        # capture session. In on-demand mode the stream is stopped
+                        # after each bell, leaving stale frames in the queue. If a
+                        # new ring consumed those, it would snapshot + recognize an
+                        # OLD face (e.g. yesterday's) and could falsely unlock the
+                        # door before any live frame is ever processed.
+                        self._drain_queue()
+                        self.current_frame = None
+
                         self.capture_thread = threading.Thread(target=self._capture_stream)
                         self.capture_thread.daemon = True
                         self.is_capturing = True
@@ -127,6 +136,14 @@ class StreamManager:
             self.stream.close()
         logging.info("MJPEG stream capture stopped.")
 
+    def _drain_queue(self):
+        """Empty the frame queue so no stale frames survive across sessions."""
+        while True:
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def get_frame(self):
         try:
             frame = self.frame_queue.get_nowait()
@@ -151,6 +168,7 @@ class StreamManager:
             if self.stream:
                 self.stream.close()
             self.current_frame = None
+            self._drain_queue()  # don't let this session's frames leak into the next
             logging.info("MJPEG stream capture stopped.")
 
     def start_watchdog(self):
