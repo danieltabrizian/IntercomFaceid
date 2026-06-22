@@ -194,6 +194,34 @@ class FaceRecognizer:
             if started_here:
                 self.stream_manager.stop_video_stream()
 
+    def capture_snapshot(self, prefix='signal'):
+        """Grab a single LIVE frame and save it as a snapshot — no recognition,
+        no unlock. Used to attach an image to non-doorbell bus signals so the
+        activity log shows who's there. Returns the snapshot filename or None."""
+        if self.event_logger is None:
+            return None
+        started_here = not self.stream_manager.is_capturing
+        if started_here:
+            if not self.stream_manager.start_video_stream():
+                logging.error('Failed to start video stream for snapshot.')
+                return None
+        try:
+            frame = None
+            wait_until = time.time() + 4
+            while time.time() < wait_until:
+                ret, f = self.stream_manager.get_frame()
+                if ret:
+                    frame = f
+                    break
+                time.sleep(0.05)
+            if frame is None:
+                logging.warning('Could not grab frame for signal snapshot.')
+                return None
+            return self.event_logger.save_snapshot(frame, prefix=prefix)
+        finally:
+            if started_here:
+                self.stream_manager.stop_video_stream()
+
     def _do_capture(self, capture_time, run_recognition):
         # Cold start: wait briefly for the first decoded frame after (re)connecting.
         frame = None

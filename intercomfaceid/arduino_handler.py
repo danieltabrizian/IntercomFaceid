@@ -120,13 +120,8 @@ class ArduinoHandler:
                     return ""
                 if c is not None and c in self.ignored_codes:
                     return ""
-                if line and self.event_logger is not None:
-                    if line.lower() == 'unlock':
-                        self.event_logger.log('door_unlocked')
-                    elif line.startswith('Received HEX:'):
-                        self.event_logger.log('hex_received', command=line)
-                    else:
-                        self.event_logger.log('serial_command', command=line)
+                # Logging of signal lines is owned by main.py now, so it can attach
+                # a live snapshot to non-doorbell signals before logging them.
                 return line
         except (serial.SerialException, OSError) as e:
             logging.error(f"Error reading from serial: {e}")

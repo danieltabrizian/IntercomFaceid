@@ -22,6 +22,10 @@ import sys
 # feedback loop).
 DOORBELL_CODES = {"0C594F80"}
 
+# Codes that should be logged but NOT given a snapshot: the 1C594F80 unlock echo
+# the intercom emits when the door opens — it's not a ring, so no point capturing.
+UNLOCK_ECHO_CODES = {"1C594F80"}
+
 
 def _signal_code(command):
     """Extract the code portion of a 'call:XXXX' / 'Received HEX: XXXX' line."""
@@ -77,12 +81,10 @@ def main():
 
         if enable_arduino:
             command = arduino.read_command()  # 4-digit noise already dropped upstream
-            code = _signal_code(command)
-            if code is not None:
-                # Only our doorbell triggers a snapshot + recognition. Everything
-                # else on the bus (other units' calls, the 1C594F80 unlock echo) is
-                # ignored — which also prevents the unlock->recognize->unlock loop.
-                if code in DOORBELL_CODES:
+            if command:
+                code = _signal_code(command)
+                if code is not None and code in DOORBELL_CODES:
+                    # Our doorbell: snapshot + recognition (+ unlock if recognised).
                     logging.info(f"Doorbell: {command}")
                     if enable_mqtt:
                         try:
@@ -94,10 +96,23 @@ def main():
                             face_recognizer.captureFace(run_recognition=True)
                         except Exception as e:
                             logging.error(f"Error during face capture: {e}")
+                elif code is not None:
+                    # Another unit's call / bus signal: capture a live snapshot for
+                    # the activity log so we can see who's there — but NO recognition
+                    # and NO unlock. The unlock echo gets logged without a snapshot.
+                    snap = None
+                    if enable_face_recognition and code not in UNLOCK_ECHO_CODES:
+                        try:
+                            snap = face_recognizer.capture_snapshot()
+                        except Exception as e:
+                            logging.error(f"Error capturing signal snapshot: {e}")
+                    logging.info(f"Signal: {command}")
+                    event_logger.log('hex_received', command=command, snapshot=snap)
+                elif command.lower() == "unlock":
+                    event_logger.log('door_unlocked')
+                    logging.info("Received unlock command")
                 else:
-                    logging.debug(f"Ignored signal: {command}")
-            elif command == "unlock":
-                logging.info("Received unlock command")
+                    event_logger.log('serial_command', command=command)
 
         time.sleep(1)
 

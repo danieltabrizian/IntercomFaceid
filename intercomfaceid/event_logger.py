@@ -65,7 +65,25 @@ class EventLogger:
         filename = f'{prefix}_{ts}.jpg'
         path = os.path.join(self.snapshots_dir, filename)
         cv2.imwrite(path, frame)
+        self._prune_snapshots()
         return filename
+
+    def _prune_snapshots(self, max_keep=500):
+        """Cap the snapshots dir so per-signal images can't fill the disk —
+        keep the newest max_keep, delete the rest."""
+        try:
+            files = [os.path.join(self.snapshots_dir, f)
+                     for f in os.listdir(self.snapshots_dir) if f.endswith('.jpg')]
+            if len(files) <= max_keep:
+                return
+            files.sort(key=os.path.getmtime)
+            for f in files[:len(files) - max_keep]:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     # ---- per-person face image galleries ----
     # Each person gets a directory /data/face_snapshots/<name>/ holding the most
