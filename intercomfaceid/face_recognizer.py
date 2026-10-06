@@ -3,6 +3,7 @@ import insightface
 from insightface.utils import face_align
 import json
 import os
+import glob
 import time
 import threading
 from datetime import datetime
@@ -196,27 +197,30 @@ class FaceRecognizer:
             except Exception as e:
                 logging.debug(f'fallback publish failed: {e}')
 
-    def _feed_is_live(self, first_frame):
-        """True if the stream looks like a LIVE camera, False if it's static.
-        A live sensor's frames always differ slightly (noise); motionEye's
-        'camera unavailable' placeholder is one identical image repeated."""
-        if first_frame is None:
-            return False
-        deadline = time.time() + 1.5
-        while time.time() < deadline:
-            time.sleep(0.1)
-            ret, f = self.stream_manager.get_frame()
-            if ret and f is not None and f.shape == first_frame.shape:
-                diff = float(np.mean(np.abs(f.astype(np.int16) - first_frame.astype(np.int16))))
-                if diff > 0.5:
-                    return True
-        return False
+    def _camera_on_bus(self):
+        """True if a V4L2 capture device is present. The add-on can read the
+        host's /sys read-only, and when the capture card drops off the USB bus
+        there are no /sys/class/video4linux/video* nodes. This is a reliable
+        'is there a camera at all' signal — far better than inspecting frames,
+        since motionEye overlays a live timestamp on its 'unavailable'
+        placeholder, which would fool a frame-difference check."""
+        try:
+            return len(glob.glob('/sys/class/video4linux/video*')) > 0
+        except Exception:
+            return True  # can't tell — assume present rather than fail-open blindly
 
     # --------------------------------------------------------- recognition
 
     def captureFace(self, capture_time=30, run_recognition=True):
         """Start the stream on demand, capture, then stop it again so the add-on
         consumes no CPU decoding frames while idle."""
+        # Fail-open fast path: a real doorbell when the capture card is off the
+        # USB bus means there's no feed to recognise against — unlock immediately
+        # rather than leave someone locked out.
+        if run_recognition and FAILOPEN_ON_NO_FEED and not self._camera_on_bus():
+            logging.warning('Doorbell rang but capture device is off the USB bus.')
+            self._fallback_unlock('camera_off_bus')
+            return
         started_here = not self.stream_manager.is_capturing
         if started_here:
             logging.info('Starting video stream...')
@@ -281,13 +285,6 @@ class FaceRecognizer:
             self.event_logger.log('bell_ring', snapshot=snapshot_filename)
 
         if not run_recognition:
-            return
-
-        # Fail-open: if the feed isn't live (motionEye is serving its static
-        # "camera unavailable" placeholder because the capture card dropped),
-        # there's nothing to recognise — unlock rather than lock someone out.
-        if FAILOPEN_ON_NO_FEED and not self._feed_is_live(frame):
-            self._fallback_unlock('no_live_feed', snapshot=snapshot_filename)
             return
 
         if self.event_logger is not None:
