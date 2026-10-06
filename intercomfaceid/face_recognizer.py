@@ -12,6 +12,11 @@ import cv2
 MATCH_THRESHOLD = 0.50   # buffalo_sc cosine similarity to accept a match (0–1)
 REQUIRED_MATCHES = 2     # consecutive live frames that must match the SAME person
                          # before unlocking — guards against single-frame false hits
+FAILOPEN_ON_NO_FEED = True  # if the doorbell rings but there is NO live camera feed
+                            # (capture card dropped / motionEye placeholder / stream
+                            # won't start), unlock anyway so nobody gets locked out.
+                            # Does NOT fire when the camera works but the face simply
+                            # isn't recognised — that still denies.
 DEDUP_THRESHOLD = 0.70   # during enrollment, skip embeddings more similar than this
 BLUR_THRESHOLD  = 80.0   # Laplacian variance on the face crop; below this = "blurry".
                          # Gates the EXPENSIVE embedding step — detection still runs.
@@ -177,6 +182,36 @@ class FaceRecognizer:
         if self.mqtt_client:
             self.mqtt_client.publish_face_recognized(name)
 
+    def _fallback_unlock(self, reason, snapshot=None):
+        """Fail-open: the bell rang but there is no live camera feed, so we can't
+        recognise anyone — unlock anyway rather than lock someone out."""
+        logging.warning(f'Fail-open unlock — no live camera feed ({reason})')
+        if self.event_logger is not None:
+            self.event_logger.log('fallback_unlock', reason=reason, snapshot=snapshot)
+        if self.arduino:
+            self.arduino.unlock()
+        if self.mqtt_client:
+            try:
+                self.mqtt_client.publish_face_recognized('Fail-open (no camera)')
+            except Exception as e:
+                logging.debug(f'fallback publish failed: {e}')
+
+    def _feed_is_live(self, first_frame):
+        """True if the stream looks like a LIVE camera, False if it's static.
+        A live sensor's frames always differ slightly (noise); motionEye's
+        'camera unavailable' placeholder is one identical image repeated."""
+        if first_frame is None:
+            return False
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            time.sleep(0.1)
+            ret, f = self.stream_manager.get_frame()
+            if ret and f is not None and f.shape == first_frame.shape:
+                diff = float(np.mean(np.abs(f.astype(np.int16) - first_frame.astype(np.int16))))
+                if diff > 0.5:
+                    return True
+        return False
+
     # --------------------------------------------------------- recognition
 
     def captureFace(self, capture_time=30, run_recognition=True):
@@ -187,6 +222,8 @@ class FaceRecognizer:
             logging.info('Starting video stream...')
             if not self.stream_manager.start_video_stream():
                 logging.error('Failed to start video stream.')
+                if run_recognition and FAILOPEN_ON_NO_FEED:
+                    self._fallback_unlock('stream_unavailable')
                 return
         try:
             self._do_capture(capture_time, run_recognition)
@@ -234,6 +271,8 @@ class FaceRecognizer:
             time.sleep(0.05)
         if frame is None:
             logging.warning('Could not grab frame for snapshot.')
+            if run_recognition and FAILOPEN_ON_NO_FEED:
+                self._fallback_unlock('no_frame')
             return
 
         snapshot_filename = None
@@ -242,6 +281,13 @@ class FaceRecognizer:
             self.event_logger.log('bell_ring', snapshot=snapshot_filename)
 
         if not run_recognition:
+            return
+
+        # Fail-open: if the feed isn't live (motionEye is serving its static
+        # "camera unavailable" placeholder because the capture card dropped),
+        # there's nothing to recognise — unlock rather than lock someone out.
+        if FAILOPEN_ON_NO_FEED and not self._feed_is_live(frame):
+            self._fallback_unlock('no_live_feed', snapshot=snapshot_filename)
             return
 
         if self.event_logger is not None:

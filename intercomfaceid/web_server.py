@@ -312,6 +312,7 @@ const BADGE = {
   face_denied:          ['b-denied','🚫 Denied'],
   face_migrated:        ['b-mig',   '⚡ Migrated'],
   door_unlocked:        ['b-ok',    '🔓 Unlocked'],
+  fallback_unlock:      ['b-denied','🔓 Fail-open'],
   serial_command:       ['b-raw',   '📡 Serial'],
   arduino_connected:    ['b-ard',   '🔌 Connected'],
   arduino_disconnected: ['b-ard',   '⚠️ Disconnected'],
@@ -319,7 +320,7 @@ const BADGE = {
 const ICON = {
   bell_ring: '🔔', hex_received: '📶', recognition_started: '🔍',
   face_recognized: '👤', face_denied: '❓', face_migrated: '⚡',
-  door_unlocked: '🔓', serial_command: '📡',
+  door_unlocked: '🔓', fallback_unlock: '🔓', serial_command: '📡',
   arduino_connected: '🔌', arduino_disconnected: '⚠️'
 };
 
@@ -353,6 +354,8 @@ function evHtml(e) {
     detail = `<div class="ev-detail">${e.command||''}</div>`;
   else if (e.type === 'door_unlocked')
     detail = `<div class="ev-detail">Door opened</div>`;
+  else if (e.type === 'fallback_unlock')
+    detail = `<div class="ev-detail">Door opened — no live camera feed (${e.reason||'camera down'})</div>`;
   else if (e.type === 'serial_command')
     detail = `<div class="ev-detail">${e.command||''}</div>`;
   else if (e.message)
